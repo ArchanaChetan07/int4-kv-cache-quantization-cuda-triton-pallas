@@ -65,6 +65,33 @@ def _use_cuda(force: Optional[bool] = None) -> bool:
     return HAS_CUDA and HAS_TORCH
 
 
+#: Backends implementing each op. Attention deliberately omits "triton": this
+#: repository has a Triton quantizer but no Triton attention kernel.
+QUANTIZE_BACKENDS = ("reference", "cuda", "triton", "pallas")
+ATTENTION_BACKENDS = ("reference", "cuda", "pallas")
+
+
+def _validate_backend(backend: Optional[str], supported: tuple, op: str) -> None:
+    """Reject unknown or unimplemented backends instead of falling back.
+
+    A silent fallback here is the worst possible failure mode for this project:
+    asking for one backend and receiving another produces a benchmark that
+    measures the wrong thing and reports it under the wrong name. Every caller
+    that names a backend gets it or gets an exception.
+    """
+    if backend is None or backend in supported:
+        return
+    if backend == "triton" and op == "attention":
+        raise ValueError(
+            "no Triton attention kernel exists in this repository -- the Triton "
+            "port covers the quantizer only. Use backend='cuda' or 'pallas' for "
+            f"attention, or one of {QUANTIZE_BACKENDS} for quantize_int4()."
+        )
+    raise ValueError(
+        f"unknown backend {backend!r} for {op}; supported: {supported}"
+    )
+
+
 def quantize_int4(
     kv: np.ndarray,
     use_cuda: Optional[bool] = None,
@@ -85,6 +112,8 @@ def quantize_int4(
     Returns:
         (q, scale, zp) as NumPy arrays
     """
+    _validate_backend(backend, QUANTIZE_BACKENDS, "quantize")
+
     if backend == "pallas":
         from .quantize_int4_pallas import quantize_int4_pallas
         return quantize_int4_pallas(kv, interpret=_pallas_interpret(interpret))
@@ -97,12 +126,23 @@ def quantize_int4(
         return quantize_int4_ref(kv, per_channel=True)
 
     if backend == "cuda" or (backend is None and _use_cuda(use_cuda)):
+        if backend == "cuda" and not HAS_CUDA:
+            raise RuntimeError(
+                "CUDA backend requested but the extension is not built. Set "
+                "FLASH_DECODE_JIT_CUDA=1 on a GPU host with nvcc."
+            )
+        if backend == "cuda" and kv.ndim != 2:
+            raise ValueError(
+                f"the CUDA quantizer takes a 2D [rows, channels] array, got "
+                f"shape {kv.shape}. Use backend='reference' for higher-rank input."
+            )
         if kv.ndim == 2 and HAS_CUDA:
             kv_t = torch.from_numpy(kv.astype(np.float32)).cuda()
             q, scale, zp = _C.quantize_int4(kv_t)
             return q.cpu().numpy(), scale.cpu().numpy(), zp.cpu().numpy()
-        if backend == "cuda":
-            raise RuntimeError("CUDA backend requested but not available")
+        # backend == "cuda" with a bad shape or missing extension already raised
+        # above; reaching here means auto-detect chose CUDA but the input is not
+        # 2D, which legitimately falls back to the reference.
 
     return quantize_int4_ref(kv, per_channel=True)
 
@@ -132,6 +172,8 @@ def flash_decode(
     Returns:
         Attention output [batch, heads, head_dim]
     """
+    _validate_backend(backend, ATTENTION_BACKENDS, "attention")
+
     num_blocks = len(k_q_blocks)
     if block_lens is None:
         block_lens = np.array([b.shape[0] for b in k_q_blocks], dtype=np.int32)

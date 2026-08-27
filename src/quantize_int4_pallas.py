@@ -151,6 +151,14 @@ def quantize_int4_pallas(
         raise ValueError(f"expected [num_rows, num_channels], got {kv_j.shape}")
 
     n_rows, n_ch = kv_j.shape
+    if n_rows == 0 or n_ch == 0:
+        raise ValueError(
+            f"cannot quantize an empty array (shape {kv_j.shape}): per-channel "
+            f"min/max over zero rows is undefined"
+        )
+    if block_rows < 1:
+        raise ValueError(f"block_rows must be >= 1, got {block_rows}")
+
     block_r = min(block_rows, n_rows)
     n_grid = (n_rows + block_r - 1) // block_r
 

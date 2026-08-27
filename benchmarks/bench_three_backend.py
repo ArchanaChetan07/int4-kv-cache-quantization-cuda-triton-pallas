@@ -210,6 +210,8 @@ def probe(name: str) -> Optional[str]:
 
 def time_op(fn, iters: int, warmup: int = 3) -> float:
     """Milliseconds per call, warm-up discarded."""
+    if iters < 1:
+        raise ValueError(f"iters must be >= 1, got {iters}")
     for _ in range(warmup):
         fn()
     t0 = time.perf_counter()
@@ -458,8 +460,8 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
                 ms = time_op(lambda: BACKENDS[name](p), iters=iters)
             except Exception as exc:
                 print(f"    {name:10s} ERROR {exc!r}")
-                results["rows"].append({**cfg, "backend": name,
-                                        "error": repr(exc)})
+                results["rows"].append({"op": "attention", **cfg,
+                                        "backend": name, "error": repr(exc)})
                 continue
 
             dev = device_label(name)
@@ -472,6 +474,7 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
             rel = ms / baselines[key]
 
             results["rows"].append({
+                "op": "attention",
                 **cfg,
                 "backend": name,
                 "device": dev,
@@ -503,10 +506,13 @@ def main():
     ap.add_argument("--op", default="both", choices=["quantize", "attention", "both"],
                     help="quantize has 3 real backends; attention has cuda+pallas only")
     ap.add_argument("--quick", action="store_true")
-    ap.add_argument("--iters", type=int, default=5)
+    ap.add_argument("--iters", type=int, default=5,
+                    help="timed iterations per configuration (>=1)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
+    if args.iters < 1:
+        ap.error("--iters must be >= 1")
     sweep = QUICK_SWEEP if args.quick else SWEEP
     backends = [b.strip() for b in args.backends.split(",") if b.strip()]
 

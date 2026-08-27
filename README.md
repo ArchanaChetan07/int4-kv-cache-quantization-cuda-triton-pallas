@@ -56,11 +56,18 @@ All numbers are measured in this repository and reproducible with the commands s
 | Pallas test suite | **21 passing** (8 quantizer, 13 attention) | CI (CPU runners) |
 | INT4 nibble packing (2 values/byte) | round-trip exact; stored bytes = ½ unpacked | — |
 | CUDA quantizer vs NumPy reference | **0.000% bin disagreement**, scales rtol 1e-4 | T1000 |
-| Fused INT4 attention vs reference | **MAE 3.1 × 10⁻⁸** | T1000 |
+| Fused INT4 attention — *agreement* with FP32 reference (head_dim 64) | **MAE 3.1 × 10⁻⁸** | T1000 |
 | Variable-length + empty-block edge cases | MAE ≤ 3.4 × 10⁻⁸ | T1000 |
 | Kernel latency (batch 8 × 32 heads × dim 128 × seq 2048) | **2.84 ms** — 3.9× faster than the initial serial kernel (10.95 ms), memory-bandwidth-bound | T1000 |
 | KV memory compression vs FP16 | **3.98×** (measured, incl. scale/zero-point overhead) | — |
 | KV quantization SNR (per-block scales, Gaussian worst case) | 19.3 dB (+2 dB vs whole-sequence scales) | — |
+
+> **Agreement is not accuracy.** The 3.1 × 10⁻⁸ figure is how closely the CUDA
+> kernel matches the FP32 NumPy reference — not how close either is to the true
+> answer. Two implementations sharing a similar accumulation order can agree to
+> 3 × 10⁻⁸ while both sit ~2 × 10⁻⁷ from a float64 evaluation. The oracle's own
+> error is measured in [docs/TRITON_TO_PALLAS.md §5.1](docs/TRITON_TO_PALLAS.md),
+> which is why the Pallas tests gate against a float64 arbiter instead.
 
 **Accuracy gate:** worst-case simulation passes the 0.5% fallback threshold; the hard
 < 0.3% perplexity gate runs against real Llama weights (`scripts/validate_llama.py`,

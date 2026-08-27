@@ -87,5 +87,74 @@ class TestCUDAParity:
         np.testing.assert_allclose(out_cuda, out_ref, rtol=1e-3, atol=1e-4)
 
 
+class TestBackendSelectionIsHonest:
+    """A named backend is delivered or refused -- never silently substituted.
+
+    Regression tests for a real defect: ops.flash_decode(backend="triton")
+    returned NumPy reference results, byte-identical to backend="reference".
+    Benchmarking that would have measured NumPy and reported it as Triton --
+    precisely the failure the harness anti-cheat assertions exist to prevent,
+    sitting one layer below them.
+    """
+
+    @staticmethod
+    def _attention_args():
+        rng = np.random.RandomState(0)
+        query = rng.randn(1, 2, 16).astype(np.float32)
+        k = rng.randn(32, 16).astype(np.float32)
+        v = rng.randn(32, 16).astype(np.float32)
+        q, s, z = quantize_int4_ref(k, per_channel=True)
+        return (query, [q], [s], [z], [v], np.array([32], dtype=np.int32))
+
+    def test_attention_rejects_triton_rather_than_faking_it(self):
+        with pytest.raises(ValueError, match="no Triton attention kernel"):
+            ops.flash_decode(*self._attention_args(), backend="triton")
+
+    def test_attention_rejects_unknown_backend(self):
+        with pytest.raises(ValueError, match="unknown backend"):
+            ops.flash_decode(*self._attention_args(), backend="nonsense")
+
+    def test_quantize_rejects_unknown_backend(self):
+        kv = np.random.RandomState(1).randn(32, 8).astype(np.float32)
+        with pytest.raises(ValueError, match="unknown backend"):
+            ops.quantize_int4(kv, backend="nonsense")
+
+    def test_valid_backends_still_dispatch(self):
+        """The guard must not break the paths that do exist."""
+        kv = np.random.RandomState(2).randn(64, 16).astype(np.float32)
+        q_ref, s_ref, _ = ops.quantize_int4(kv, backend="reference")
+        assert q_ref.shape == kv.shape
+
+        out_ref = ops.flash_decode(*self._attention_args(), backend="reference")
+        assert np.isfinite(out_ref).all()
+
+        # auto-detect (backend=None) must remain unaffected
+        assert np.isfinite(ops.flash_decode(*self._attention_args())).all()
+
+    def test_declared_backend_sets_match_reality(self):
+        """Attention genuinely has no Triton kernel; quantize genuinely does."""
+        assert "triton" in ops.QUANTIZE_BACKENDS
+        assert "triton" not in ops.ATTENTION_BACKENDS
+        for name in ops.ATTENTION_BACKENDS:
+            assert name in ops.QUANTIZE_BACKENDS or name == "reference"
+
+
+class TestQuantizerInputValidation:
+    """Degenerate shapes must raise, not divide by zero."""
+
+    def test_empty_array_rejected(self):
+        jax = pytest.importorskip("jax", reason="jax not installed")
+        from src.quantize_int4_pallas import quantize_int4_pallas
+        with pytest.raises(ValueError, match="empty array"):
+            quantize_int4_pallas(np.zeros((0, 8), np.float32), interpret=True)
+
+    def test_zero_block_rows_rejected(self):
+        jax = pytest.importorskip("jax", reason="jax not installed")
+        from src.quantize_int4_pallas import quantize_int4_pallas
+        kv = np.random.RandomState(3).randn(16, 4).astype(np.float32)
+        with pytest.raises(ValueError, match="block_rows"):
+            quantize_int4_pallas(kv, block_rows=0, interpret=True)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
