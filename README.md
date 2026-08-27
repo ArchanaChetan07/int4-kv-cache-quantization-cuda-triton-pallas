@@ -394,6 +394,16 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 - [ ] Real-model perplexity gate on Llama-2-7B/13B/70B (needs ≥16 GB GPU)
 - [ ] vLLM attention-backend integration; benchmark vs TensorRT-LLM / SGLang baselines
 
+## Project report (PDF)
+
+A 12-page technical report covering the whole project — algorithm, the three
+implementations, the port methodology, measured results, the four findings, the
+benchmark integrity design, and an explicit section on what has *not* been
+established: **[docs/INT4_KV_Pallas_Project_Report.pdf](docs/INT4_KV_Pallas_Project_Report.pdf)**
+
+Regenerate with `python scripts/make_project_pdf.py`. Every figure and number in
+it is produced by this repository.
+
 ## Running on rented GPU hardware
 
 The performance leg needs a Hopper-class GPU or a TPU — Pallas has no CPU code
