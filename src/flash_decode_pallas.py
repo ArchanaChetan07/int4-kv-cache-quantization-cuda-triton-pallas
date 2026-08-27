@@ -55,6 +55,42 @@ except ImportError:  # pragma: no cover - exercised only where jax is absent
 _L_FLOOR = 1e-10
 
 
+def _compiler_params(platform: str):
+    """Declare which grid axes may run in parallel and which must not.
+
+    THIS IS LOAD-BEARING FOR CORRECTNESS ON GPU, and it is invisible in
+    interpret mode.
+
+    The grid is (batch, heads, blocks). The block axis carries the online-
+    softmax accumulators in resident output blocks, so it MUST be executed
+    sequentially. On TPU that is free: the grid is always processed in
+    lexicographic order. On GPU it is not -- Mosaic GPU partitions 'parallel'
+    dimensions across CUDA thread blocks, which would turn the accumulator
+    into a race.
+
+    Returns None when the platform is unknown or the API is unavailable, in
+    which case pallas_call is invoked without compiler params (correct on TPU,
+    and the only option in interpret mode).
+    """
+    # (batch, heads) are genuinely independent; the block axis is not.
+    try:
+        if platform == "tpu":
+            from jax.experimental.pallas import tpu as pltpu
+            cls = getattr(pltpu, "CompilerParams", None) or getattr(
+                pltpu, "TPUCompilerParams", None)
+            # TPU vocabulary is parallel / arbitrary.
+            return cls(dimension_semantics=("parallel", "parallel", "arbitrary"))
+        if platform in ("cuda", "rocm", "gpu"):
+            from jax.experimental.pallas import mosaic_gpu as plgpu
+            cls = getattr(plgpu, "CompilerParams", None) or getattr(
+                plgpu, "GPUCompilerParams", None)
+            # GPU vocabulary is parallel / sequential.
+            return cls(dimension_semantics=("parallel", "parallel", "sequential"))
+    except Exception:
+        return None
+    return None
+
+
 if HAS_JAX:
 
     def _flash_decode_kernel(
@@ -206,11 +242,19 @@ def flash_decode_pallas(
         s_arr[i] = k_scales[i]
         z_arr[i] = k_zps[i]
 
+    # Grid-order semantics must be declared explicitly for any compiled
+    # backend; see _compiler_params. Omitted in interpret mode, which executes
+    # the grid sequentially by construction.
+    platform = "" if interpret else jax.devices()[0].platform
+    cparams = None if interpret else _compiler_params(platform)
+    extra = {"compiler_params": cparams} if cparams is not None else {}
+
     out = pl.pallas_call(
         lambda *refs: _flash_decode_kernel(
             *refs, n_blocks=n_blocks, use_dot=use_dot
         ),
         grid=(batch, heads, n_blocks),
+        **extra,
         in_specs=[
             pl.BlockSpec((1, 1, head_dim), lambda b, h, i: (b, h, 0)),      # query
             pl.BlockSpec((1, block_size, head_dim), lambda b, h, i: (i, 0, 0)),  # k_q
