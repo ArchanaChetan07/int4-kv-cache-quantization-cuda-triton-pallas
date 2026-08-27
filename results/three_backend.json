@@ -1,0 +1,144 @@
+{
+  "sweep": "quick",
+  "sweep_note": "The full anchor sweep is not runnable in interpret mode: it is ~2k-33k grid steps per call at roughly 3 ms/step, i.e. minutes per measurement. Interpret mode is a correctness vehicle; the full sweep needs TPU or Hopper-class hardware.",
+  "host": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.5"
+  },
+  "backend_status": {
+    "has_torch": false,
+    "has_cuda": false,
+    "has_triton": false,
+    "has_jax": true,
+    "jax_devices": [
+      "cpu"
+    ],
+    "pallas_interpret_default": true,
+    "active_backend": "reference",
+    "available_backends": [
+      "reference",
+      "pallas"
+    ]
+  },
+  "rules": {
+    "ms_comparable": "within a single device only",
+    "cross_device_metric": "mbu_percent",
+    "mbu_definition": "compulsory bytes / elapsed / peak DRAM bandwidth (lower bound: counts each K/V byte once)",
+    "sweep_fixed_before_timing": true
+  },
+  "backends": {
+    "reference": {
+      "available": true,
+      "reason": null,
+      "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+      "anticheat": {
+        "output_consumed": {
+          "pass": true,
+          "checksum": -9.369960345153231
+        },
+        "no_shape_specialization": {
+          "pass": true,
+          "seq_len": 513
+        }
+      }
+    },
+    "pallas": {
+      "available": true,
+      "reason": null,
+      "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+      "anticheat": {
+        "output_consumed": {
+          "pass": true,
+          "checksum": -9.369965926976874
+        },
+        "no_shape_specialization": {
+          "pass": true,
+          "seq_len": 513
+        },
+        "kernel_lowered": {
+          "pass": null,
+          "skipped": "interpret mode: kernel runs as JAX ops, no Mosaic custom call exists to assert on"
+        }
+      }
+    },
+    "cuda": {
+      "available": false,
+      "reason": "CUDA extension not built (set FLASH_DECODE_JIT_CUDA=1 on a GPU host)",
+      "device": null
+    }
+  },
+  "rows": [
+    {
+      "batch": 2,
+      "heads": 4,
+      "head_dim": 64,
+      "seq_len": 512,
+      "block_size": 128,
+      "backend": "reference",
+      "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.16072001308202744,
+      "ms_comparable_within": {
+        "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+        "execution_mode": "compiled"
+      },
+      "compulsory_bytes": 169984,
+      "peak_bandwidth_gbs": null,
+      "mbu_percent": null
+    },
+    {
+      "batch": 2,
+      "heads": 4,
+      "head_dim": 64,
+      "seq_len": 512,
+      "block_size": 128,
+      "backend": "pallas",
+      "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+      "execution_mode": "interpret",
+      "ms_per_call": 87.95591997914016,
+      "ms_comparable_within": {
+        "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+        "execution_mode": "interpret"
+      },
+      "compulsory_bytes": 169984,
+      "peak_bandwidth_gbs": null,
+      "mbu_percent": null
+    },
+    {
+      "batch": 2,
+      "heads": 8,
+      "head_dim": 128,
+      "seq_len": 1024,
+      "block_size": 256,
+      "backend": "reference",
+      "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.4857399966567755,
+      "ms_comparable_within": {
+        "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+        "execution_mode": "compiled"
+      },
+      "compulsory_bytes": 675840,
+      "peak_bandwidth_gbs": null,
+      "mbu_percent": null
+    },
+    {
+      "batch": 2,
+      "heads": 8,
+      "head_dim": 128,
+      "seq_len": 1024,
+      "block_size": 256,
+      "backend": "pallas",
+      "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+      "execution_mode": "interpret",
+      "ms_per_call": 88.80042000673711,
+      "ms_comparable_within": {
+        "device": "CPU (Intel64 Family 6 Model 183 Stepping 1, GenuineIntel)",
+        "execution_mode": "interpret"
+      },
+      "compulsory_bytes": 675840,
+      "peak_bandwidth_gbs": null,
+      "mbu_percent": null
+    }
+  ]
+}

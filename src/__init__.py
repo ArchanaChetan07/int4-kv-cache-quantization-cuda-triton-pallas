@@ -42,6 +42,12 @@ except ImportError:
     HAS_CUDA = False
     _C = None
 
+try:
+    import jax as _jax  # noqa: F401
+    HAS_PALLAS = True
+except ImportError:
+    HAS_PALLAS = False
+
 __all__ = [
     'quantize_int4_ref',
     'dequantize_int4_ref',
@@ -50,10 +56,29 @@ __all__ = [
     'HAS_QUANT_REF',
     'HAS_DECODE_REF',
     'HAS_CUDA',
+    'HAS_PALLAS',
 ]
+
+def _mark(ok: bool) -> str:
+    """Tick/cross, degrading to ASCII where the console cannot encode them.
+
+    Windows consoles default to cp1252, which has no U+2713; printing it raises
+    UnicodeEncodeError and takes down backend_info() entirely.
+    """
+    import sys
+    glyphs = ('✓', '✗')
+    encoding = getattr(sys.stdout, 'encoding', None) or 'ascii'
+    try:
+        for g in glyphs:
+            g.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        glyphs = ('yes', 'no')
+    return glyphs[0] if ok else glyphs[1]
+
 
 def backend_info():
     """Print available backends"""
-    print(f"Quantization reference: {'✓' if HAS_QUANT_REF else '✗'}")
-    print(f"Flash decode reference: {'✓' if HAS_DECODE_REF else '✗'}")
-    print(f"CUDA extension: {'✓' if HAS_CUDA else '✗'}")
+    print(f"Quantization reference: {_mark(HAS_QUANT_REF)}")
+    print(f"Flash decode reference: {_mark(HAS_DECODE_REF)}")
+    print(f"CUDA extension: {_mark(HAS_CUDA)}")
+    print(f"Pallas / JAX: {_mark(HAS_PALLAS)}")

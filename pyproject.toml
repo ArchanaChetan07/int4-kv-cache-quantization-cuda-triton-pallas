@@ -29,6 +29,12 @@ dev = [
 cuda = [
     "torch>=2.0.0",
 ]
+pallas = [
+    # jaxlib > 0.4.38 fails to load on some Windows hosts with
+    # "DLL load failed while importing _jax"; see docs/TRITON_TO_PALLAS.md 5.5.
+    # On Linux / with an accelerator, plain "jax[cpu]" or the TPU wheel works.
+    "jax>=0.4.30",
+]
 llama = [
     "transformers>=4.30.0",
     "datasets>=2.0.0",

@@ -3,6 +3,7 @@
 [![CI](https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving/actions/workflows/ci.yml/badge.svg)](https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving/actions/workflows/ci.yml)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)]()
 [![Triton](https://img.shields.io/badge/Triton-port%20included-4B32C3)]()
+[![Pallas](https://img.shields.io/badge/Pallas%2FJAX-port%20included-F9AB00)]()
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python)]()
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)]()
@@ -29,6 +30,9 @@ All numbers are measured in this repository and reproducible with the commands s
 | Test suite (GPU mode, `FLASH_DECODE_JIT_CUDA=1`) | **50 passing** (1 Triton-on-Windows skip) | NVIDIA T1000, CUDA 12.5 |
 | Test suite (CPU-only mode) | 48 passing, 3 gated skips | any machine, no GPU needed |
 | Triton quantizer port vs reference | parity via interpreter mode | CI (CPU runners) |
+| Pallas quantizer port vs reference | **0.000% bin disagreement**, scales rtol 1e-4 | CI (CPU, interpret mode) |
+| Pallas attention vs float64 evaluation | **2.59e-07 MAE** at head_dim 128 — 3.6x *more* accurate than the FP32 oracle | CI (CPU, interpret mode) |
+| Pallas test suite | **21 passing** (8 quantizer, 13 attention) | CI (CPU runners) |
 | INT4 nibble packing (2 values/byte) | round-trip exact; stored bytes = ½ unpacked | — |
 | CUDA quantizer vs NumPy reference | **0.000% bin disagreement**, scales rtol 1e-4 | T1000 |
 | Fused INT4 attention vs reference | **MAE 3.1 × 10⁻⁸** | T1000 |
@@ -76,9 +80,12 @@ q        = clip(round((k − min[c]) / scale[c]), 0, 15)
   from the actual arrays, not an estimate. Kernels currently consume the unpacked
   layout with coalesced uint8 reads (consecutive lanes read consecutive channels);
   packed-native kernel decode is on the roadmap.
-- **Two kernel implementations:** CUDA (`csrc/flash_decode_int4.cu`) and a
+- **Three kernel implementations:** CUDA (`csrc/flash_decode_int4.cu`), a
   [Triton](https://github.com/triton-lang/triton) port of the quantizer
-  (`src/quantize_int4_triton.py`), parity-tested against the same NumPy reference.
+  (`src/quantize_int4_triton.py`), and a [Pallas/JAX](https://docs.jax.dev/en/latest/pallas/)
+  port of **both** the quantizer and the fused attention kernel
+  (`src/quantize_int4_pallas.py`, `src/flash_decode_pallas.py`) — all three
+  parity-tested against the same NumPy reference.
 
 ### Attention: warp-parallel online softmax (flash-decoding style)
 
@@ -147,6 +154,29 @@ python benchmarks/bench_flash_decode.py
 python scripts/validate_llama.py --simulate   # hardware-free SNR gate
 ```
 
+### Pallas / JAX backend (no accelerator required)
+
+Pallas has no CPU code generator, so the kernels run via
+`pallas_call(interpret=True)` — the same correctness-without-hardware trick the
+Triton port uses with `TRITON_INTERPRET=1`, and what CI runs on every push.
+
+```bash
+pip install -e ".[pallas]"
+pytest tests/test_pallas_quantize.py tests/test_pallas_flash_decode.py -q   # 21 passed
+python benchmarks/bench_three_backend.py --quick --backends reference,pallas
+```
+
+```python
+from src import ops
+q, scale, zp = ops.quantize_int4(kv, backend="pallas")
+out = ops.flash_decode(query, k_q, k_scales, k_zps, v_blocks, lens, backend="pallas")
+```
+
+Interpret-mode timings are **correctness evidence, not performance numbers**;
+the benchmark harness refuses to print a speedup ratio across execution modes.
+See [docs/TRITON_TO_PALLAS.md](docs/TRITON_TO_PALLAS.md) for why the performance
+leg needs TPU or Hopper-class hardware.
+
 ### GPU mode (CUDA GPU + nvcc + PyTorch with CUDA)
 
 The extension JIT-compiles on import and is cached afterward. On Windows, run from
@@ -186,18 +216,21 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 ├── src/
 │   ├── quantize_int4_ref.py     NumPy ground truth: per-channel asymmetric INT4
 │   ├── quantize_int4_triton.py  Triton port of the quantizer
+│   ├── quantize_int4_pallas.py  Pallas/JAX port of the quantizer
+│   ├── flash_decode_pallas.py   Pallas/JAX port of the fused attention kernel
 │   ├── int4_pack.py             nibble packing (2 INT4 values/byte storage)
 │   ├── flash_decode_ref.py      NumPy ground truth: online softmax over pages
-│   ├── ops.py                   backend dispatch (CUDA ⇄ reference)
+│   ├── ops.py                   backend dispatch (cuda / triton / pallas / reference)
 │   ├── vllm_integration.py      INT4PagedKVCache (quantize + pack on write)
 │   └── _jit.py                  opt-in JIT compile of the CUDA extension
 ├── csrc/
 │   ├── flash_decode_int4.cu   quantize kernel + warp-parallel fused attention
 │   └── bindings.cpp           PyTorch pybind11 bindings
-├── tests/                     42 tests: quantization, attention, gates, parity
-├── benchmarks/                latency + compression benchmarks (JSON committed)
+├── tests/                     quantization, attention, gates, 3-backend parity
+├── benchmarks/                latency, compression, and three-backend benchmarks
 ├── scripts/validate_llama.py  SNR simulation + real-model perplexity harness
 ├── docs/ARCHITECTURE.md       quantization scheme, kernel design, gates
+├── docs/TRITON_TO_PALLAS.md   the port write-up: what transferred, what misled
 └── results/                   committed benchmark artifacts
 ```
 
@@ -217,6 +250,11 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 - [x] NumPy reference: quantizer + online softmax
 - [x] CUDA kernels — parity at MAE 3e-08, 3.9× kernel speedup to bandwidth roofline
 - [x] Triton port of the quantizer (CI-validated via interpreter mode)
+- [x] Pallas/JAX port of the quantizer **and** the fused attention kernel
+      (CI-validated via `interpret=True`) — see [docs/TRITON_TO_PALLAS.md](docs/TRITON_TO_PALLAS.md)
+- [ ] Pallas performance leg on TPU v5e — blocked on hardware, not on code:
+      Pallas has no CPU code generator, Mosaic GPU needs Hopper+, and the
+      Pallas Triton backend is deprecated
 - [x] INT4 nibble packing (2 values/byte) in the cache storage path
 - [x] JIT build path + packaging + CI + Docker
 - [ ] Packed-native kernel decode (read nibbles directly in the attention kernel)

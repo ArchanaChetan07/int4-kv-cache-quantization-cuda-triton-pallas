@@ -42,3 +42,27 @@ jobs:
         env:
           TRITON_INTERPRET: "1"
         run: pytest tests/test_triton_quantize.py -v
+
+  test-pallas-interpret:
+    name: Pallas kernels (interpret mode, no accelerator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies + JAX (CPU)
+        run: |
+          pip install numpy pytest
+          pip install "jax[cpu]"
+      - name: Validate Pallas quantizer and attention numerics
+        # Pallas has no CPU code generator, so these run via
+        # pallas_call(interpret=True) -- the exact analogue of the
+        # TRITON_INTERPRET=1 job above. This is what keeps the port's numerics
+        # under CI without an accelerator in the loop.
+        run: pytest tests/test_pallas_quantize.py tests/test_pallas_flash_decode.py -v
+      - name: Benchmark harness smoke test
+        # Proves the three-backend harness runs and that its anti-cheat
+        # assertions fire; the timings it produces here are interpret-mode and
+        # are not performance numbers.
+        run: python benchmarks/bench_three_backend.py --quick --iters 1 --backends reference,pallas

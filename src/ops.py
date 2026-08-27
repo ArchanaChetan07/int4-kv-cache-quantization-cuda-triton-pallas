@@ -30,6 +30,34 @@ if not HAS_CUDA:
     _C = load_extension("flash_decode_int4_C", "FLASH_DECODE_JIT_CUDA")
     HAS_CUDA = _C is not None
 
+try:
+    import jax  # noqa: F401
+    HAS_JAX = True
+except ImportError:
+    HAS_JAX = False
+    jax = None
+
+def _has_accelerator() -> bool:
+    """True when jax sees a non-CPU device (TPU or supported GPU)."""
+    if not HAS_JAX:
+        return False
+    try:
+        return any(d.platform != "cpu" for d in jax.devices())
+    except Exception:
+        return False
+
+
+def _pallas_interpret(force: Optional[bool] = None) -> bool:
+    """Whether the Pallas backend should run in interpret mode.
+
+    Interpret mode executes the kernel as ordinary JAX instead of lowering to
+    Mosaic, so it works on any machine. It is a correctness vehicle, not a fast
+    path -- so it is the default only when no accelerator is present.
+    """
+    if force is not None:
+        return force
+    return not _has_accelerator()
+
 
 def _use_cuda(force: Optional[bool] = None) -> bool:
     if force is not None:
@@ -40,20 +68,41 @@ def _use_cuda(force: Optional[bool] = None) -> bool:
 def quantize_int4(
     kv: np.ndarray,
     use_cuda: Optional[bool] = None,
+    backend: Optional[str] = None,
+    interpret: Optional[bool] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Quantize KV to INT4 (per-channel asymmetric). Dispatches to CUDA or reference.
+    """Quantize KV to INT4 (per-channel asymmetric).
 
     Args:
         kv: 2D array [num_rows, num_channels]
-        use_cuda: Force backend (None = auto-detect)
+        use_cuda: Force CUDA on/off (None = auto-detect). Legacy flag, kept so
+            existing callers are unaffected.
+        backend: Explicit backend: "cuda", "triton", "pallas" or "reference".
+            Takes precedence over use_cuda when given.
+        interpret: Pallas only -- run as ordinary JAX instead of lowering to
+            Mosaic. Defaults to True when no accelerator is visible.
 
     Returns:
         (q, scale, zp) as NumPy arrays
     """
-    if _use_cuda(use_cuda) and kv.ndim == 2:
-        kv_t = torch.from_numpy(kv.astype(np.float32)).cuda()
-        q, scale, zp = _C.quantize_int4(kv_t)
-        return q.cpu().numpy(), scale.cpu().numpy(), zp.cpu().numpy()
+    if backend == "pallas":
+        from .quantize_int4_pallas import quantize_int4_pallas
+        return quantize_int4_pallas(kv, interpret=_pallas_interpret(interpret))
+
+    if backend == "triton":
+        from .quantize_int4_triton import quantize_int4_triton
+        return quantize_int4_triton(kv)
+
+    if backend == "reference":
+        return quantize_int4_ref(kv, per_channel=True)
+
+    if backend == "cuda" or (backend is None and _use_cuda(use_cuda)):
+        if kv.ndim == 2 and HAS_CUDA:
+            kv_t = torch.from_numpy(kv.astype(np.float32)).cuda()
+            q, scale, zp = _C.quantize_int4(kv_t)
+            return q.cpu().numpy(), scale.cpu().numpy(), zp.cpu().numpy()
+        if backend == "cuda":
+            raise RuntimeError("CUDA backend requested but not available")
 
     return quantize_int4_ref(kv, per_channel=True)
 
@@ -66,6 +115,8 @@ def flash_decode(
     v_blocks: List[np.ndarray],
     block_lens: Optional[np.ndarray] = None,
     use_cuda: Optional[bool] = None,
+    backend: Optional[str] = None,
+    interpret: Optional[bool] = None,
 ) -> np.ndarray:
     """Fused online-softmax attention over INT4 quantized paged KV.
 
@@ -85,7 +136,22 @@ def flash_decode(
     if block_lens is None:
         block_lens = np.array([b.shape[0] for b in k_q_blocks], dtype=np.int32)
 
-    if _use_cuda(use_cuda):
+    if backend == "pallas":
+        from .flash_decode_pallas import flash_decode_pallas
+        return flash_decode_pallas(
+            query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens,
+            interpret=_pallas_interpret(interpret),
+        )
+
+    if backend == "reference":
+        key_scale_zp = [(k_q_blocks[i], k_scales[i], k_zps[i]) for i in range(num_blocks)]
+        output, _ = online_softmax_ref(query, key_scale_zp, v_blocks, block_lens)
+        return output
+
+    if backend == "cuda" and not _use_cuda(True):
+        raise RuntimeError("CUDA backend requested but not available")
+
+    if _use_cuda(use_cuda) or backend == "cuda":
         block_size = max(b.shape[0] for b in k_q_blocks)
         head_dim = query.shape[2]
 
@@ -119,8 +185,30 @@ def flash_decode(
 
 def backend_status() -> dict:
     """Return current backend availability."""
+    try:
+        from .quantize_int4_triton import HAS_TRITON
+    except ImportError:
+        HAS_TRITON = False
+
+    devices = []
+    if HAS_JAX:
+        try:
+            devices = [d.platform for d in jax.devices()]
+        except Exception:
+            devices = []
+
     return {
         'has_torch': HAS_TORCH,
         'has_cuda': HAS_CUDA,
+        'has_triton': HAS_TRITON,
+        'has_jax': HAS_JAX,
+        'jax_devices': devices,
+        'pallas_interpret_default': _pallas_interpret(),
         'active_backend': 'cuda' if _use_cuda() else 'reference',
+        'available_backends': (
+            ['reference']
+            + (['cuda'] if HAS_CUDA else [])
+            + (['triton'] if HAS_TRITON else [])
+            + (['pallas'] if HAS_JAX else [])
+        ),
     }

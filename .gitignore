@@ -77,3 +77,6 @@ PROJECT2_COMPLETE_STATUS.md
 *.tmp
 *.temp
 .venv.backup
+
+# JAX/Pallas dev environment
+.venv-jax/
