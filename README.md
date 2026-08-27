@@ -1,6 +1,6 @@
 # INT4 KV-Cache Quantization with Fused Flash-Attention CUDA Kernels for LLM Serving
 
-[![CI](https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving/actions/workflows/ci.yml/badge.svg)](https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving/actions/workflows/ci.yml)
+[![CI](https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas/actions/workflows/ci.yml/badge.svg)](https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas/actions/workflows/ci.yml)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)]()
 [![Triton](https://img.shields.io/badge/Triton-port%20included-4B32C3)]()
 [![Pallas](https://img.shields.io/badge/Pallas%2FJAX-port%20included-F9AB00)]()
@@ -146,8 +146,8 @@ materialized — dequantization happens in registers during the dot product.
 ### CPU-only (no GPU required)
 
 ```bash
-git clone https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving.git
-cd INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving
+git clone https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas.git
+cd int4-kv-cache-quantization-cuda-triton-pallas
 pip install -e .
 pytest tests/ -q                     # 40 passed, 2 skipped
 python benchmarks/bench_flash_decode.py
