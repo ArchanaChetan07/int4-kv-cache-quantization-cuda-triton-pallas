@@ -387,6 +387,24 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 - [ ] Real-model perplexity gate on Llama-2-7B/13B/70B (needs ≥16 GB GPU)
 - [ ] vLLM attention-backend integration; benchmark vs TensorRT-LLM / SGLang baselines
 
+## Running on rented GPU hardware
+
+The performance leg needs a Hopper-class GPU or a TPU — Pallas has no CPU code
+generator, and the local Turing card is below both live Pallas GPU floors.
+[docs/H100_RUNBOOK.md](docs/H100_RUNBOOK.md) is a costed, ordered runbook
+(~$3–5, ~1.5 h) with fail-fast preflight so rented time goes to science instead
+of setup:
+
+```bash
+bash scripts/h100_bootstrap.sh     # install, build, preflight
+export FLASH_DECODE_JIT_CUDA=1
+bash scripts/h100_run_all.sh       # tests -> lowering probe -> benchmarks -> perplexity
+```
+
+`scripts/pallas_lowering_probe.py` is the step that matters: it is the first
+time these kernels meet a real compiler. `REJECTED` and `MISMATCH` are treated
+as publishable findings, not failures.
+
 ## Engineering Practices Demonstrated
 
 - **Differential testing against a higher-precision oracle** — attention accuracy is

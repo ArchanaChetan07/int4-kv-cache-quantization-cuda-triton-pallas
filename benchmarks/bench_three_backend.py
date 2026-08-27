@@ -138,6 +138,49 @@ BACKENDS: Dict[str, Callable] = {
 }
 
 
+# --- quantizer -------------------------------------------------------------
+# The quantizer is the op with three real implementations. Attention exists in
+# CUDA and Pallas only -- there is no Triton attention kernel in this repo, so
+# benchmarking "three backends" on attention would silently mean two.
+
+def _quant_problem(cfg):
+    """A 2D [rows, channels] tensor matching the attention config's KV extent."""
+    rng = np.random.RandomState(4321)
+    n_blocks = (cfg["seq_len"] + cfg["block_size"] - 1) // cfg["block_size"]
+    rows = n_blocks * cfg["block_size"]
+    return rng.randn(rows, cfg["head_dim"]).astype(np.float32)
+
+
+def _q_reference(kv):
+    return quantize_int4_ref(kv, per_channel=True)
+
+
+def _q_cuda(kv):
+    return ops.quantize_int4(kv, backend="cuda")
+
+
+def _q_triton(kv):
+    from src.quantize_int4_triton import quantize_int4_triton
+    return quantize_int4_triton(kv)
+
+
+def _q_pallas(kv):
+    return ops.quantize_int4(kv, backend="pallas")
+
+
+QUANT_BACKENDS: Dict[str, Callable] = {
+    "reference": _q_reference,
+    "cuda": _q_cuda,
+    "triton": _q_triton,
+    "pallas": _q_pallas,
+}
+
+
+def quant_compulsory_bytes(rows, channels):
+    """Read fp32 input, write uint8 bins + fp32 scale/zp per channel."""
+    return rows * channels * 4 + rows * channels * 1 + channels * 4 * 2
+
+
 def probe(name: str) -> Optional[str]:
     """Return None if the backend can run, else a reason string."""
     if name == "reference":
@@ -151,6 +194,12 @@ def probe(name: str) -> Optional[str]:
     if name == "cuda":
         if not ops.HAS_CUDA:
             return "CUDA extension not built (set FLASH_DECODE_JIT_CUDA=1 on a GPU host)"
+        return None
+    if name == "triton":
+        try:
+            import triton  # noqa: F401
+        except Exception as exc:
+            return f"triton unavailable: {type(exc).__name__}"
         return None
     return f"unknown backend {name}"
 
@@ -167,9 +216,16 @@ def time_op(fn, iters: int, warmup: int = 3) -> float:
     for _ in range(iters):
         out = fn()
     elapsed = time.perf_counter() - t0
-    # Consume the result so it cannot be eliminated as dead code.
-    if out is None or not np.isfinite(np.asarray(out)).all():
-        raise RuntimeError("backend produced a non-finite or missing result")
+    # Consume the result so it cannot be eliminated as dead code. Quantizer
+    # backends return a (q, scale, zp) tuple whose members differ in shape and
+    # dtype, so each is checked separately rather than coerced into one array.
+    if out is None:
+        raise RuntimeError("backend produced no result")
+    parts = out if isinstance(out, (tuple, list)) else (out,)
+    for part in parts:
+        arr = np.asarray(part)
+        if arr.dtype.kind == "f" and not np.isfinite(arr).all():
+            raise RuntimeError("backend produced a non-finite result")
     return (elapsed / iters) * 1000.0
 
 
@@ -282,7 +338,7 @@ def device_label(name: str) -> str:
 
 
 def run(backends: List[str], sweep: List[Dict], iters: int,
-        sweep_name: str = "full") -> Dict:
+        sweep_name: str = "full", op: str = "both") -> Dict:
     results = {
         "sweep": sweep_name,
         "sweep_note": (
@@ -320,13 +376,18 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
         else:
             print(f"  {name:10s} UNAVAILABLE - {reason}")
 
-    if not live:
+    # Triton has a quantizer but no attention kernel in this repo.
+    live_q = [b for b in live if b in QUANT_BACKENDS]
+    live = [b for b in live if b in BACKENDS]
+    results["backends_by_op"] = {"quantize": list(live_q), "attention": list(live)}
+
+    if not live and not live_q:
         print("No backends available.")
         return results
 
     # Anti-cheat once per backend, on the smallest configuration.
     small = min(sweep, key=lambda c: c["seq_len"] * c["batch"])
-    for name in live:
+    for name in (live if op in ("attention", "both") else []):
         print(f"\nAnti-cheat: {name}")
         checks = _anticheat(name, BACKENDS[name], small)
         results["backends"][name]["anticheat"] = checks
@@ -336,7 +397,53 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
                   + (f"  ({v.get('skipped') or v.get('detail') or ''})"
                      if v.get("skipped") or v.get("detail") else ""))
 
+    # ---------------- quantizer: the op with three real backends -----------
+    if op in ("quantize", "both"):
+        print()
+        print("=" * 72)
+        print("QUANTIZER  (reference / cuda / triton / pallas)")
+        print("=" * 72)
+        for cfg in sweep:
+            kv = _quant_problem(cfg)
+            rows, ch = kv.shape
+            nbytes = quant_compulsory_bytes(rows, ch)
+            print(f"{rows} x {ch}   ({nbytes/1e6:.1f} MB)")
+            qbase: Dict[tuple, float] = {}
+            for name in live_q:
+                try:
+                    ms = time_op(lambda: QUANT_BACKENDS[name](kv), iters=iters)
+                except Exception as exc:
+                    print(f"    {name:10s} ERROR {exc!r}")
+                    results["rows"].append({"op": "quantize", "rows": rows,
+                                            "channels": ch, "backend": name,
+                                            "error": repr(exc)})
+                    continue
+                dev = device_label(name)
+                mode = execution_mode(name)
+                peak = PEAK_BANDWIDTH_GBS.get(dev)
+                mbu = (nbytes / (ms / 1000.0) / (peak * 1e9) * 100.0) if peak else None
+                qbase.setdefault((dev, mode), ms)
+                rel = ms / qbase[(dev, mode)]
+                results["rows"].append({
+                    "op": "quantize", "rows": rows, "channels": ch,
+                    "backend": name, "device": dev, "execution_mode": mode,
+                    "ms_per_call": ms, "compulsory_bytes": nbytes,
+                    "peak_bandwidth_gbs": peak, "mbu_percent": mbu,
+                })
+                mbu_s = f"{mbu:6.2f}%" if mbu is not None else "   n/a"
+                rel_s = f"{rel:5.2f}x" if len(qbase) == 1 else "    -"
+                note = "" if mode == "compiled" else "  <- interpret: not a perf number"
+                print(f"    {name:10s} {ms:9.3f} ms  {rel_s}  MBU {mbu_s}  "
+                      f"[{dev}, {mode}]{note}")
+            print()
+
+    if op == "quantize":
+        return results
+
     print()
+    print("=" * 72)
+    print("ATTENTION  (reference / cuda / pallas -- no Triton attention kernel exists)")
+    print("=" * 72)
     for cfg in sweep:
         p = build_problem(**cfg)
         nbytes = compulsory_bytes(n_blocks=p["n_blocks"], **cfg)
@@ -392,7 +499,9 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--backends", default="reference,pallas,cuda")
+    ap.add_argument("--backends", default="reference,pallas,cuda,triton")
+    ap.add_argument("--op", default="both", choices=["quantize", "attention", "both"],
+                    help="quantize has 3 real backends; attention has cuda+pallas only")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--iters", type=int, default=5)
     ap.add_argument("--out", default=None)
@@ -406,7 +515,7 @@ def main():
     print("=" * 72)
 
     results = run(backends, sweep, args.iters,
-                  sweep_name="quick" if args.quick else "full")
+                  sweep_name="quick" if args.quick else "full", op=args.op)
 
     out_path = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
