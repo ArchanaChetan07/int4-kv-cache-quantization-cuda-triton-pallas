@@ -31,7 +31,7 @@ All numbers are measured in this repository and reproducible with the commands s
 | Test suite (CPU-only mode) | 48 passing, 3 gated skips | any machine, no GPU needed |
 | Triton quantizer port vs reference | parity via interpreter mode | CI (CPU runners) |
 | Pallas quantizer port vs reference | **0.000% bin disagreement**, scales rtol 1e-4 | CI (CPU, interpret mode) |
-| Pallas attention vs float64 evaluation | **2.59e-07 MAE** at head_dim 128 — 3.6x *more* accurate than the FP32 oracle | CI (CPU, interpret mode) |
+| Pallas attention vs float64 evaluation | within **1.4x of the float32 accumulation floor** on every tested platform | CI (CPU, interpret mode) |
 | Pallas test suite | **21 passing** (8 quantizer, 13 attention) | CI (CPU runners) |
 | INT4 nibble packing (2 values/byte) | round-trip exact; stored bytes = ½ unpacked | — |
 | CUDA quantizer vs NumPy reference | **0.000% bin disagreement**, scales rtol 1e-4 | T1000 |

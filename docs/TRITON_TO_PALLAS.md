@@ -51,6 +51,7 @@ TPU access and are the honest limit of what this port established.
 | Existing suite, unaffected | 48 passing in the base environment |
 | Pallas attention MAE vs float64 truth, `head_dim=128` | **2.59e-07** |
 | NumPy oracle MAE vs the same float64 truth | 9.26e-07 |
+| Both, expressed against the float32 accumulation floor | 0.32x - 1.39x across platforms (see 5.1) |
 
 The quantizer met the **CUDA target** (0.000% disagreement), not merely the
 Triton threshold (≤1 bin on <1% of elements) that the proposal set as the pass
@@ -199,10 +200,37 @@ Measured against a float64 evaluation of the same mathematics:
 | 64 | 2.13e-07 | 2.33e-07 | 6.83e-07 |
 | 128 | **9.26e-07** | **2.59e-07** | 1.06e-06 |
 
-At `head_dim=128` the Pallas kernel is **3.6× more accurate than the reference
-it is being validated against**. The predicted float32 accumulation floor,
+At `head_dim=128` the Pallas kernel is 3.6× more accurate than the reference it
+is being validated against. The predicted float32 accumulation floor,
 `sqrt(D) · eps · |o| ≈ 8.0e-07`, matches the oracle's error almost exactly — so
 the oracle is behaving normally; it is simply at the float32 noise floor.
+
+**Correction, from CI.** I first gated this as *"the Pallas kernel must be at
+least as accurate as the reference."* That passed locally and **failed in CI**,
+and the failure is more interesting than the original claim:
+
+| | `head_dim` 64 | `head_dim` 128 |
+|---|---|---|
+| NumPy reference | 2.13e-07 | 9.26e-07 |
+| Pallas, jax 0.4.38 / Windows | 2.33e-07 | 2.59e-07 |
+| Pallas, modern jax / Linux CI | **7.45e-07** | passes |
+
+The reference is byte-identical on both platforms — it is NumPy, and
+deterministic. Only the Pallas number moved, by 3.2×, because **XLA is free to
+choose a different reduction order between versions.** Expressed against the
+float32 floor, every one of those numbers lands between 0.32× and 1.39× of it:
+all four are normal, and none is a defect.
+
+So *which implementation is more accurate is not a property of either
+implementation* — it is a property of the XLA build you happen to have. My
+original gate encoded a platform accident as a numerical claim. The test now
+asserts what is actually stable: both implementations sit within 3× of the
+float32 accumulation floor. That still fails loudly for a real defect, which
+misses by orders of magnitude rather than by 1.4×.
+
+The general lesson is the one this section already argues, turned on my own
+test: a tolerance that was never checked on a second toolchain is an assumption,
+not a measurement. It took a Linux CI runner to find it.
 
 The consequence: a criterion of the form *"Pallas attention MAE vs the reference
 below 3.1e-08"* is **not satisfiable at this shape by any correct
