@@ -1,4 +1,5 @@
-# INT4 KV-Cache Quantization with Fused Flash-Attention CUDA Kernels for LLM Serving
+# INT4 KV-Cache Quantization + Fused Flash-Attention Kernels for LLM Inference
+### One decode kernel, three backends: CUDA, Triton, and Pallas/JAX (GPU + TPU)
 
 [![CI](https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas/actions/workflows/ci.yml/badge.svg)](https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas/actions/workflows/ci.yml)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)]()
@@ -18,6 +19,26 @@ never materialized. Built for paged-KV LLM serving engines like
 comparison baselines planned for the vLLM-integration milestone. The quantizer ships
 in **both CUDA and [Triton](https://github.com/triton-lang/triton)** — the Triton port
 is validated in CI on CPU runners via interpreter mode.
+
+---
+
+## Tech Stack
+
+| Layer | Technologies |
+|---|---|
+| **GPU kernels** | CUDA C++, warp-level primitives (`__shfl_down_sync`), shared memory, online softmax, PyTorch C++ extension (pybind11) |
+| **Kernel DSLs** | OpenAI Triton, JAX Pallas (Mosaic TPU / Mosaic GPU), XLA |
+| **Quantization** | INT4 per-channel asymmetric quantization, nibble packing, dequantization in registers, SNR analysis |
+| **Attention** | Flash decoding, FlashAttention-style online softmax, paged KV cache, ragged/variable-length sequences |
+| **LLM serving** | vLLM-style paged attention, KV-cache compression, decode-step optimization |
+| **Languages** | Python, CUDA C++, C++ |
+| **Numerics** | NumPy, float64 differential testing, IEEE-754 error analysis, floating-point accumulation bounds |
+| **Engineering** | pytest, GitHub Actions CI, Docker, CMake, benchmark harness design, reproducible builds |
+
+**Keywords:** GPU kernel optimization · CUDA programming · Triton kernels · JAX Pallas · TPU kernels ·
+INT4 quantization · KV cache · FlashAttention · flash decoding · LLM inference · LLM serving · vLLM ·
+model compression · memory bandwidth optimization · numerical validation · ML systems engineering ·
+AI infrastructure · high-performance computing
 
 ---
 
@@ -56,6 +77,111 @@ needs a ≥16 GB GPU). **Throughput target:** 2.1–2.8× vs dense FP16 decode.
 <p align="center">
   <img src="docs/assets/snr_per_block.png" alt="Per-block scales gain +2 dB quantization SNR" width="620">
 </p>
+
+---
+
+### Pallas / JAX port — measured results
+
+The same algorithm, written a third time in Pallas and validated against the
+**same NumPy oracle** as the CUDA and Triton paths. 21 tests, green in CI on
+Linux with the current JAX release.
+
+| Metric | Result |
+|---|---|
+| Pallas quantizer vs NumPy oracle | **0.000% bin disagreement** — matches the CUDA result, not just the ≤1-bin threshold |
+| Scales / zero-points | `rtol 1e-4` / `rtol 1e-3` |
+| Attention: ragged pages, empty pages, all-empty | correct; **no NaN**; exact zeros for a fully empty sequence |
+| Attention accuracy | within **1.4× of the float32 accumulation floor** on every tested platform |
+| Grid-decomposition invariance | bit-identical output across `block_rows` ∈ {64,128,256,512,1024} |
+| Pallas test suite | **21 passing** (8 quantizer, 13 attention) |
+| CI | 5/5 jobs green — CPU × py3.10/3.11/3.12, Triton interpreter, Pallas interpret |
+
+<p align="center">
+  <img src="docs/assets/pallas_accuracy_floor.png" alt="Attention accuracy against a float64 arbiter, normalized by the float32 accumulation floor" width="760">
+</p>
+
+Validating against the FP32 reference alone is not sufficient: at `head_dim=128`
+the **oracle's own error is 9.26e-07**, so a fixed `3e-08` agreement gate is
+unreachable by *any* correct implementation. Accuracy is therefore gated against
+a **float64 arbiter**, normalized by the `sqrt(D)·eps·|o|` accumulation floor.
+The Windows/Linux gap for Pallas is XLA choosing a different reduction order —
+a platform property, not a defect. Full analysis in
+[docs/TRITON_TO_PALLAS.md](docs/TRITON_TO_PALLAS.md).
+
+### Why the Pallas leg targets TPU
+
+<p align="center">
+  <img src="docs/assets/pallas_backend_matrix.png" alt="Backend by hardware availability matrix" width="820">
+</p>
+
+Pallas has **no CPU code generator** (`interpret=False` on CPU raises
+*"Only interpret mode is supported on CPU backend"*), Mosaic GPU requires
+**Hopper/Blackwell**, and the Pallas **Triton backend is deprecated**. A Turing
+T1000 sits below both live GPU floors — so correctness runs anywhere via
+`interpret=True`, while the performance leg needs TPU v5e or Hopper.
+
+### Three-backend architecture
+
+```mermaid
+flowchart TD
+    ORACLE["<b>NumPy oracle</b><br/>quantize_int4_ref · flash_decode_ref<br/><i>single source of truth</i>"]
+    DISPATCH["<b>src/ops.py</b><br/>backend dispatch"]
+
+    CUDA["<b>CUDA</b><br/>csrc/flash_decode_int4.cu<br/>warp-parallel + shared memory"]
+    TRITON["<b>Triton</b><br/>quantize_int4_triton.py<br/>1 program per channel"]
+    PALLAS["<b>Pallas / JAX</b><br/>quantize_int4_pallas.py<br/>flash_decode_pallas.py"]
+
+    HWC["NVIDIA GPU<br/>SM 7.5+"]
+    HWT["NVIDIA GPU<br/>Ampere+"]
+    HWP["TPU v5e · Hopper GPU<br/>CPU via interpret=True"]
+
+    ORACLE -->|validates| DISPATCH
+    DISPATCH --> CUDA & TRITON & PALLAS
+    CUDA --> HWC
+    TRITON --> HWT
+    PALLAS --> HWP
+
+    style ORACLE fill:#0B6E75,color:#fff
+    style PALLAS fill:#C2851B,color:#fff
+    style DISPATCH fill:#EDEFF3,color:#14171F
+```
+
+### What the port actually changed
+
+The algorithm is identical; the *decomposition* is not. This is the core finding:
+
+```mermaid
+flowchart LR
+    subgraph CUDA["CUDA — warp-level decomposition"]
+        direction TB
+        C1["1 thread block per (batch, head)"]
+        C2["warps stride over sequence positions"]
+        C3["per-warp (m, l) in lane registers"]
+        C4["__shfl_down_sync dot-product reduction"]
+        C5["cross-warp log-sum-exp merge<br/>+ __syncthreads"]
+        C1 --> C2 --> C3 --> C4 --> C5
+    end
+
+    subgraph PAL["Pallas — grid-level decomposition"]
+        direction TB
+        P1["grid = (batch, heads, blocks)<br/>blocks innermost"]
+        P2["BlockSpec declares which block,<br/>not which address"]
+        P3["m/l/o are <b>resident output blocks</b><br/>index_map ignores the block axis"]
+        P4["jnp.sum over a tile axis"]
+        P5["<b>merge step does not exist</b><br/>sequential grid = one accumulator"]
+        P1 --> P2 --> P3 --> P4 --> P5
+    end
+
+    CUDA -->|"port"| PAL
+
+    style CUDA fill:#EDEFF3,color:#14171F
+    style PAL fill:#DFEFF0,color:#14171F
+    style C5 fill:#F8E5E5,color:#B02A2A
+    style P5 fill:#E3F1E6,color:#2B7A3D
+```
+
+**42** warp/lane/shuffle/sync tokens in the CUDA kernel → **0** in the Pallas port.
+The cross-warp merge isn't simplified, it's *absent*.
 
 ---
 
@@ -260,6 +386,26 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 - [ ] Packed-native kernel decode (read nibbles directly in the attention kernel)
 - [ ] Real-model perplexity gate on Llama-2-7B/13B/70B (needs ≥16 GB GPU)
 - [ ] vLLM attention-backend integration; benchmark vs TensorRT-LLM / SGLang baselines
+
+## Engineering Practices Demonstrated
+
+- **Differential testing against a higher-precision oracle** — attention accuracy is
+  gated against a float64 arbiter and normalized by the IEEE-754 accumulation floor,
+  because the FP32 reference is itself at the noise floor and cannot certify a kernel.
+- **Cross-platform numerical validation** — a tolerance that passed locally failed in
+  Linux CI; root-caused to XLA reduction-order choice and corrected to test the
+  invariant physics rather than a platform accident.
+- **Benchmark integrity** — identical seeded inputs across backends, sweep fixed before
+  timing, MBU (memory-bandwidth utilization) as the cross-device metric, and anti-cheat
+  assertions: output-consumed, no-shape-specialization, kernel-present-in-compiled-HLO.
+  The harness records `execution_mode` and **refuses** to print a ratio across modes.
+- **Hardware-honest reporting** — unavailable backends are recorded with a reason, never
+  silently omitted; interpret-mode timings are labelled as correctness evidence, not
+  performance numbers.
+- **Pre-registered hypotheses** — 14 predictions written before the port, scored after:
+  10 confirmed, **1 refuted**, 3 unresolved pending TPU access.
+- **CI without accelerators** — Triton validated via `TRITON_INTERPRET=1`, Pallas via
+  `pallas_call(interpret=True)`; 5/5 jobs green on CPU-only runners.
 
 ## Related Projects
 
