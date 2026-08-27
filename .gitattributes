@@ -1,0 +1,17 @@
+# Shell scripts MUST be LF. A CRLF .sh file fails on Linux with
+# "bad interpreter: /usr/bin/env bash^M" -- which, for scripts/h100_*.sh,
+# means discovering it on a rented GPU at $3/hour.
+*.sh text eol=lf
+
+# Same reasoning for anything else executed by a POSIX shell or CI.
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+
+# Python is tolerant, but keep the repo internally consistent.
+*.py text eol=lf
+
+# Never touch binary assets.
+*.png binary
+*.jpg binary
+*.pdf binary
