@@ -10,6 +10,8 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <math_constants.h>
+#include <cstddef>
+#include <cstdint>
 
 #define WARP_SIZE 32
 
@@ -42,7 +44,7 @@ __global__ void quantize_int4_kernel(
     float local_min = CUDART_INF_F;
     float local_max = -CUDART_INF_F;
     for (int r = tid; r < num_rows; r += blockDim.x) {
-        float v = kv[r * num_channels + c];
+        float v = kv[(size_t)r * num_channels + c];
         local_min = fminf(local_min, v);
         local_max = fmaxf(local_max, v);
     }
@@ -72,11 +74,11 @@ __global__ void quantize_int4_kernel(
 
     // Quantize
     for (int r = tid; r < num_rows; r += blockDim.x) {
-        float v = kv[r * num_channels + c];
+        float v = kv[(size_t)r * num_channels + c];
         float qf = (v - min_val) / scale;
         int qi = (int)(qf + 0.5f);
         qi = max(0, min(15, qi));
-        q_out[r * num_channels + c] = (uint8_t)qi;
+        q_out[(size_t)r * num_channels + c] = (uint8_t)qi;
     }
 }
 
@@ -150,9 +152,11 @@ __global__ void flash_decode_int4_kernel(
         }
         __syncthreads();
 
-        const int blen = block_lens[blk];
+        // Defence in depth: the Python layer validates lengths, but a length
+        // outside [0, block_size] must never become an out-of-bounds read.
+        const int blen = min(max(block_lens[blk], 0), block_size);
         for (int s = warp; s < blen; s += num_warps) {
-            const size_t row = (size_t)(blk * block_size + s) * head_dim;
+            const size_t row = ((size_t)blk * block_size + s) * head_dim;
 
             // Lane-partial dot product, then warp-shuffle reduction
             float partial = 0.0f;
@@ -230,6 +234,8 @@ cudaError_t cu_quantize_int4(
     float* zp_out,
     cudaStream_t stream
 ) {
+    if (num_rows <= 0 || num_channels <= 0) return cudaErrorInvalidValue;
+
     int threads = 256;
     int blocks = num_channels;
     int shared = 2 * threads * sizeof(float);
@@ -255,6 +261,13 @@ cudaError_t cu_flash_decode_int4(
     float* output,
     cudaStream_t stream
 ) {
+    // The kernel keeps its output accumulator in MAX_DIM_FRAGS lane-register
+    // slots per thread. A wider head_dim would index past that array -- an
+    // out-of-bounds write in device code -- so it is rejected here.
+    if (head_dim <= 0 || head_dim > MAX_DIM_FRAGS * WARP_SIZE) return cudaErrorInvalidValue;
+    if (batch_size <= 0 || num_heads <= 0 || num_blocks < 0 || block_size < 0)
+        return cudaErrorInvalidValue;
+
     dim3 grid(batch_size, num_heads);
     int threads = 128;
     int num_warps = threads / 32;

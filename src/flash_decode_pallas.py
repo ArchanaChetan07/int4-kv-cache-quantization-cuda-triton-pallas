@@ -34,9 +34,11 @@ correction factor and every probability to exactly zero.
 Runs on TPU/GPU via Mosaic, or on CPU via interpret=True.
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
+
+from ._validate import normalize_attention_inputs
 
 try:
     import jax
@@ -212,20 +214,20 @@ def flash_decode_pallas(
     if not HAS_JAX:
         raise RuntimeError("jax is not installed")
 
-    query = np.asarray(query, dtype=np.float32)
-    if query.ndim != 3:
-        raise ValueError(f"query must be [batch, heads, head_dim], got {query.shape}")
+    # Same validation as every other backend: shapes consistent, and each
+    # block length inside [0, rows in that page].
+    query, block_lens = normalize_attention_inputs(
+        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
+    query = query.astype(np.float32)
 
     batch, heads, head_dim = query.shape
     n_blocks = len(k_q_blocks)
     if n_blocks == 0:
-        raise ValueError("at least one KV page is required")
+        # An empty cache is the all-pages-empty case: exact zeros, as in the
+        # reference and the CUDA kernel.
+        return np.zeros(query.shape, dtype=np.float32)
 
     block_size = max(int(b.shape[0]) for b in k_q_blocks)
-
-    if block_lens is None:
-        block_lens = np.array([b.shape[0] for b in k_q_blocks], dtype=np.int32)
-    block_lens = np.asarray(block_lens, dtype=np.int32)
 
     # Pad ragged pages into the dense [num_blocks, block_size, head_dim] layout
     # the CUDA path also uses. Real paged serving hands the kernel this layout

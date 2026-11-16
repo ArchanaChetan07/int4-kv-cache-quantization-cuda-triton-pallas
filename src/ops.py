@@ -1,14 +1,18 @@
 """
 Dispatch layer for Flash Decoding INT4.
 
-Routes to CUDA kernels when available, falling back to NumPy references.
+One entry point per op, four implementations behind it: the NumPy reference
+(always available), the CUDA extension, the Triton quantizer and the Pallas
+kernels. Auto-detection (backend=None) prefers CUDA and falls back to the
+reference; an explicitly named backend is delivered or raises.
 """
 
 import numpy as np
 from typing import List, Optional, Tuple
 
-from .quantize_int4_ref import quantize_int4_ref, dequantize_int4_ref
-from .flash_decode_ref import online_softmax_ref, _online_softmax_fp32
+from .quantize_int4_ref import quantize_int4_ref
+from .flash_decode_ref import online_softmax_ref
+from ._validate import normalize_attention_inputs
 
 try:
     import torch
@@ -147,6 +151,18 @@ def quantize_int4(
     return quantize_int4_ref(kv, per_channel=True)
 
 
+#: The CUDA attention kernel keeps its output accumulator in 8 lane-register
+#: slots per thread (MAX_DIM_FRAGS * WARP_SIZE in flash_decode_int4.cu).
+CUDA_MAX_HEAD_DIM = 256
+
+
+def _reference_attention(query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens):
+    key_scale_zp = [(k_q_blocks[i], k_scales[i], k_zps[i])
+                    for i in range(len(k_q_blocks))]
+    output, _ = online_softmax_ref(query, key_scale_zp, v_blocks, block_lens)
+    return output
+
+
 def flash_decode(
     query: np.ndarray,
     k_q_blocks: List[np.ndarray],
@@ -160,23 +176,36 @@ def flash_decode(
 ) -> np.ndarray:
     """Fused online-softmax attention over INT4 quantized paged KV.
 
+    Every query in the [batch, heads] grid attends over the SAME page stream.
+    That is the kernels' interface: one launch serves many queries against one
+    sequence's keys and values. Attention with distinct KV per head is one call
+    per (sequence, head) stream.
+
     Args:
         query: [batch, heads, head_dim]
-        k_q_blocks: List of INT4-quantized key blocks [block_size, head_dim]
+        k_q_blocks: List of INT4-quantized key pages [rows, head_dim], uint8
         k_scales: List of per-channel scales [head_dim]
         k_zps: List of per-channel zero-points [head_dim]
-        v_blocks: List of FP32 value blocks [block_size, head_dim]
-        block_lens: Effective length per block
-        use_cuda: Force backend (None = auto-detect)
+        v_blocks: List of value pages [rows, head_dim]
+        block_lens: Valid rows per page; each must lie in [0, rows of that page].
+            Defaults to full pages.
+        use_cuda: Force CUDA on/off (None = auto-detect). Legacy flag.
+        backend: Explicit backend: "cuda", "pallas" or "reference". A named
+            backend is delivered or raises -- it is never substituted.
+        interpret: Pallas only -- run as ordinary JAX instead of lowering.
 
     Returns:
-        Attention output [batch, heads, head_dim]
+        Attention output [batch, heads, head_dim], float32
     """
     _validate_backend(backend, ATTENTION_BACKENDS, "attention")
+    query, block_lens = normalize_attention_inputs(
+        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
 
     num_blocks = len(k_q_blocks)
-    if block_lens is None:
-        block_lens = np.array([b.shape[0] for b in k_q_blocks], dtype=np.int32)
+    if num_blocks == 0:
+        # Attention over an empty cache is the all-pages-empty case: no mass
+        # was accumulated, so every backend returns exact zeros.
+        return np.zeros(query.shape, dtype=np.float32)
 
     if backend == "pallas":
         from .flash_decode_pallas import flash_decode_pallas
@@ -186,18 +215,30 @@ def flash_decode(
         )
 
     if backend == "reference":
-        key_scale_zp = [(k_q_blocks[i], k_scales[i], k_zps[i]) for i in range(num_blocks)]
-        output, _ = online_softmax_ref(query, key_scale_zp, v_blocks, block_lens)
-        return output
+        return _reference_attention(
+            query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
 
-    if backend == "cuda" and not _use_cuda(True):
-        raise RuntimeError("CUDA backend requested but not available")
+    if backend == "cuda" and not HAS_CUDA:
+        raise RuntimeError(
+            "CUDA backend requested but the extension is not built. Set "
+            "FLASH_DECODE_JIT_CUDA=1 on a GPU host with nvcc."
+        )
 
-    if _use_cuda(use_cuda) or backend == "cuda":
+    head_dim = query.shape[2]
+    use_kernel = backend == "cuda" or (backend is None and _use_cuda(use_cuda))
+    if use_kernel and head_dim > CUDA_MAX_HEAD_DIM:
+        if backend == "cuda":
+            raise ValueError(
+                f"the CUDA attention kernel supports head_dim <= "
+                f"{CUDA_MAX_HEAD_DIM}, got {head_dim}. Use backend='pallas' or "
+                "'reference' for wider heads."
+            )
+        use_kernel = False   # auto-detect: fall back rather than overflow
+
+    if use_kernel:
         block_size = max(b.shape[0] for b in k_q_blocks)
-        head_dim = query.shape[2]
 
-        # Pad blocks to uniform size for CUDA layout
+        # Pad pages to a uniform size for the kernel's dense layout
         k_q_arr = np.zeros((num_blocks, block_size, head_dim), dtype=np.uint8)
         v_arr = np.zeros((num_blocks, block_size, head_dim), dtype=np.float32)
         scale_arr = np.zeros((num_blocks, head_dim), dtype=np.float32)
@@ -216,20 +257,19 @@ def flash_decode(
             torch.from_numpy(scale_arr).cuda(),
             torch.from_numpy(zp_arr).cuda(),
             torch.from_numpy(v_arr).cuda(),
-            torch.from_numpy(block_lens.astype(np.int32)).cuda(),
+            torch.from_numpy(block_lens).cuda(),
         )
         return out.cpu().numpy()
 
-    key_scale_zp = [(k_q_blocks[i], k_scales[i], k_zps[i]) for i in range(num_blocks)]
-    output, _ = online_softmax_ref(query, key_scale_zp, v_blocks, block_lens)
-    return output
+    return _reference_attention(
+        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
 
 
 def backend_status() -> dict:
     """Return current backend availability."""
     try:
         from .quantize_int4_triton import HAS_TRITON
-    except ImportError:
+    except Exception:   # a broken triton install can raise more than ImportError
         HAS_TRITON = False
 
     devices = []

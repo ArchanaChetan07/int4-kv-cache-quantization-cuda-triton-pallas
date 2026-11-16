@@ -156,5 +156,187 @@ class TestQuantizerInputValidation:
             quantize_int4_pallas(kv, block_rows=0, interpret=True)
 
 
+def _paged_problem(batch=2, heads=3, dim=32, n_blocks=3, rows=64, seed=0):
+    """A small, valid INT4 paged-KV attention problem."""
+    rng = np.random.RandomState(seed)
+    query = (rng.randn(batch, heads, dim) / np.sqrt(dim)).astype(np.float32)
+    k_q, k_s, k_z, vals = [], [], [], []
+    for _ in range(n_blocks):
+        k = rng.randn(rows, dim).astype(np.float32)
+        v = rng.randn(rows, dim).astype(np.float32)
+        q, s_, z = quantize_int4_ref(k, per_channel=True)
+        k_q.append(q); k_s.append(s_); k_z.append(z); vals.append(v)
+    return query, k_q, k_s, k_z, vals
+
+
+def _available_attention_backends():
+    out = ["reference"]
+    if ops.HAS_CUDA:
+        out.append("cuda")
+    if ops.HAS_JAX:
+        out.append("pallas")
+    return out
+
+
+@pytest.mark.parametrize("backend", _available_attention_backends())
+class TestAttentionInputContract:
+    """Malformed input raises the same error on every backend.
+
+    Before this contract existed the backends disagreed: the NumPy reference
+    silently truncated an over-long block length, the Pallas kernel masked it,
+    and the CUDA kernel read past the end of the page.
+    """
+
+    def test_block_len_longer_than_page_is_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem(rows=64)
+        with pytest.raises(ValueError, match="outside"):
+            ops.flash_decode(query, k_q, k_s, k_z, vals,
+                             np.array([64, 65, 64]), backend=backend)
+
+    def test_negative_block_len_is_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        with pytest.raises(ValueError, match="outside"):
+            ops.flash_decode(query, k_q, k_s, k_z, vals,
+                             np.array([64, -1, 64]), backend=backend)
+
+    def test_wrong_number_of_block_lens_is_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        with pytest.raises(ValueError, match="entries"):
+            ops.flash_decode(query, k_q, k_s, k_z, vals,
+                             np.array([64, 64]), backend=backend)
+
+    def test_mismatched_page_lists_are_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        with pytest.raises(ValueError, match="same length"):
+            ops.flash_decode(query, k_q, k_s, k_z, vals[:-1], backend=backend)
+
+    def test_value_page_shape_mismatch_is_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        vals[1] = vals[1][:-3]
+        with pytest.raises(ValueError, match="value page 1"):
+            ops.flash_decode(query, k_q, k_s, k_z, vals, backend=backend)
+
+    def test_key_page_wrong_head_dim_is_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem(dim=32)
+        with pytest.raises(ValueError, match="key page"):
+            ops.flash_decode(query[:, :, :16], k_q, k_s, k_z, vals, backend=backend)
+
+    def test_non_3d_query_is_rejected(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        with pytest.raises(ValueError, match="query must be"):
+            ops.flash_decode(query[0], k_q, k_s, k_z, vals, backend=backend)
+
+    def test_empty_cache_returns_exact_zeros(self, backend):
+        """Zero pages is the all-pages-empty case, on every backend."""
+        query, _, _, _, _ = _paged_problem()
+        out = ops.flash_decode(query, [], [], [], [], backend=backend)
+        assert out.shape == query.shape
+        np.testing.assert_array_equal(out, np.zeros_like(query))
+
+    def test_block_lens_accepts_a_plain_list(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        as_list = ops.flash_decode(query, k_q, k_s, k_z, vals, [64, 10, 0],
+                                   backend=backend)
+        as_array = ops.flash_decode(query, k_q, k_s, k_z, vals,
+                                    np.array([64, 10, 0], dtype=np.int64),
+                                    backend=backend)
+        np.testing.assert_array_equal(as_list, as_array)
+
+    def test_valid_ragged_input_matches_reference(self, backend):
+        query, k_q, k_s, k_z, vals = _paged_problem()
+        lens = np.array([64, 0, 17], dtype=np.int32)
+        got = ops.flash_decode(query, k_q, k_s, k_z, vals, lens, backend=backend)
+        ref = ops.flash_decode(query, k_q, k_s, k_z, vals, lens, backend="reference")
+        assert np.isfinite(got).all()
+        assert np.abs(got - ref).max() < 1e-5
+
+
+@pytest.mark.skipif(not ops.HAS_CUDA, reason="compiled CUDA extension not available")
+class TestCUDAKernelBoundaries:
+    """Shapes at and beyond the limits of the CUDA attention kernel.
+
+    The kernel holds its output accumulator in 8 lane-register slots per thread,
+    so it supports head_dim <= 256. A wider head used to index past that array:
+    an out-of-bounds write in device code, with no check at any layer.
+    """
+
+    @pytest.mark.parametrize("dim", [1, 2, 31, 32, 33, 64, 127, 128, 129, 255, 256])
+    def test_head_dim_boundaries_match_reference(self, dim):
+        query, k_q, k_s, k_z, vals = _paged_problem(dim=dim, rows=96, seed=dim)
+        lens = np.array([96, 40, 96], dtype=np.int32)
+        got = ops.flash_decode(query, k_q, k_s, k_z, vals, lens, backend="cuda")
+        ref = ops.flash_decode(query, k_q, k_s, k_z, vals, lens, backend="reference")
+        assert np.isfinite(got).all()
+        assert np.abs(got - ref).max() < 1e-4, f"head_dim {dim}"
+
+    def test_head_dim_beyond_kernel_limit_is_rejected_not_overflowed(self):
+        query, k_q, k_s, k_z, vals = _paged_problem(dim=320, rows=32)
+        with pytest.raises(ValueError, match="head_dim"):
+            ops.flash_decode(query, k_q, k_s, k_z, vals, backend="cuda")
+
+    def test_auto_detect_falls_back_for_wide_heads(self):
+        """backend=None may choose another implementation; it must not overflow."""
+        query, k_q, k_s, k_z, vals = _paged_problem(dim=320, rows=32)
+        got = ops.flash_decode(query, k_q, k_s, k_z, vals)
+        ref = ops.flash_decode(query, k_q, k_s, k_z, vals, backend="reference")
+        np.testing.assert_array_equal(got, ref)
+
+    @pytest.mark.parametrize("rows", [1, 3, 4, 5, 127, 128, 129])
+    def test_page_sizes_around_the_warp_count(self, rows):
+        """Four warps stride over positions; sizes near multiples of 4 and 128
+        exercise warps that see zero, one or uneven numbers of positions."""
+        query, k_q, k_s, k_z, vals = _paged_problem(dim=64, rows=rows, seed=rows)
+        got = ops.flash_decode(query, k_q, k_s, k_z, vals, backend="cuda")
+        ref = ops.flash_decode(query, k_q, k_s, k_z, vals, backend="reference")
+        assert np.abs(got - ref).max() < 1e-4, f"rows {rows}"
+
+    def test_binding_rejects_mismatched_shapes(self):
+        """Direct misuse of the extension raises instead of reading out of bounds."""
+        import torch
+        q = torch.zeros(1, 1, 64, device="cuda")
+        k = torch.zeros(2, 16, 64, dtype=torch.uint8, device="cuda")
+        v = torch.zeros(2, 16, 64, device="cuda")
+        sc = torch.ones(2, 64, device="cuda")
+        zp = torch.zeros(2, 64, device="cuda")
+        lens = torch.full((2,), 16, dtype=torch.int32, device="cuda")
+
+        ops._C.flash_decode_int4(q, k, sc, zp, v, lens)            # well-formed
+
+        with pytest.raises(RuntimeError, match="k_scale"):
+            ops._C.flash_decode_int4(q, k, sc[:1], zp, v, lens)
+        with pytest.raises(RuntimeError, match="value"):
+            ops._C.flash_decode_int4(q, k, sc, zp, v[:, :8], lens)
+        with pytest.raises(RuntimeError, match="block_lens"):
+            ops._C.flash_decode_int4(q, k, sc, zp, v, lens[:1])
+        with pytest.raises(RuntimeError, match="int32"):
+            ops._C.flash_decode_int4(q, k, sc, zp, v, lens.long())
+        with pytest.raises(RuntimeError, match="head_dim"):
+            wide = torch.zeros(1, 1, 320, device="cuda")
+            ops._C.flash_decode_int4(
+                wide, torch.zeros(1, 4, 320, dtype=torch.uint8, device="cuda"),
+                torch.ones(1, 320, device="cuda"), torch.zeros(1, 320, device="cuda"),
+                torch.zeros(1, 4, 320, device="cuda"),
+                torch.full((1,), 4, dtype=torch.int32, device="cuda"))
+
+    def test_binding_rejects_bad_quantizer_input(self):
+        import torch
+        with pytest.raises(RuntimeError, match="float32"):
+            ops._C.quantize_int4(torch.zeros(4, 4, dtype=torch.float64, device="cuda"))
+        with pytest.raises(RuntimeError, match="non-empty"):
+            ops._C.quantize_int4(torch.zeros(0, 4, device="cuda"))
+        with pytest.raises(RuntimeError, match="2D"):
+            ops._C.quantize_int4(torch.zeros(4, device="cuda"))
+
+    @pytest.mark.parametrize("shape", [(1, 1), (1, 64), (255, 3), (256, 3), (257, 3),
+                                       (1030, 8), (4096, 128)])
+    def test_quantizer_shapes_match_reference(self, shape):
+        """Row counts around the 256-thread block; single-row and single-channel."""
+        kv = np.random.RandomState(shape[0]).randn(*shape).astype(np.float32)
+        q, scale, zp = ops.quantize_int4(kv, backend="cuda")
+        q_r, scale_r, _ = quantize_int4_ref(kv, per_channel=True)
+        np.testing.assert_allclose(scale, scale_r, rtol=1e-4)
+        assert np.abs(q.astype(int) - q_r.astype(int)).max() <= 1
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
