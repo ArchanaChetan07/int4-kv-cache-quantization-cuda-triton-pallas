@@ -1,0 +1,47 @@
+{
+  "model": "meta-llama/Llama-2-7b-hf",
+  "dataset": "Salesforce/wikitext/wikitext-2-raw-v1",
+  "device": "NVIDIA H100 80GB HBM3",
+  "method": "fake-quantized post-RoPE keys inside attention (Cache.update hook); values full precision; asymmetric, per (kv_head, block, channel), round-half-up",
+  "tokens_scored": 20479,
+  "ppl_fp16": 4.5328,
+  "rows": [
+    {
+      "block_size": 256,
+      "ppl_int4_keys": 4.5515,
+      "delta_percent": 0.414,
+      "key_compression_vs_fp16": 3.76,
+      "hook_calls": 608,
+      "expected_hook_calls": 608,
+      "gate_0_3_pass": false
+    },
+    {
+      "block_size": 128,
+      "ppl_int4_keys": 4.546,
+      "delta_percent": 0.2921,
+      "key_compression_vs_fp16": 3.56,
+      "hook_calls": 608,
+      "expected_hook_calls": 608,
+      "gate_0_3_pass": true
+    },
+    {
+      "block_size": 64,
+      "ppl_int4_keys": 4.5435,
+      "delta_percent": 0.2377,
+      "key_compression_vs_fp16": 3.2,
+      "hook_calls": 608,
+      "expected_hook_calls": 608,
+      "gate_0_3_pass": true
+    },
+    {
+      "block_size": 32,
+      "ppl_int4_keys": 4.5409,
+      "delta_percent": 0.1787,
+      "key_compression_vs_fp16": 2.67,
+      "hook_calls": 608,
+      "expected_hook_calls": 608,
+      "gate_0_3_pass": true
+    }
+  ],
+  "seconds": 8.2
+}

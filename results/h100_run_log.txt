@@ -1,0 +1,186 @@
+commit: ecea254 Correctness gate in the benchmark; refuse compiled Pallas on GPU
+NVIDIA H100 80GB HBM3, 1980 MHz, 1980 MHz, 41, 160.18 W
+
+######## STEP 1: Correctness first -- never benchmark a kernel you have not validated
+collected 154 items
+
+tests/test_correctness.py .......                                        [  4%]
+tests/test_flash_decode.py ..............                                [ 13%]
+tests/test_int4_pack.py .......                                          [ 18%]
+tests/test_ops_dispatch.py ............................................. [ 47%]
+..........................                                               [ 64%]
+tests/test_pallas_flash_decode.py .............                          [ 72%]
+tests/test_pallas_quantize.py ........                                   [ 77%]
+tests/test_perplexity_harness.py ............                            [ 85%]
+tests/test_quantization.py ...........                                   [ 92%]
+tests/test_triton_quantize.py .....                                      [ 96%]
+tests/test_vllm_integration.py ......                                    [100%]
+
+======================== 154 passed in 85.28s (0:01:25) ========================
+  >> If the Pallas tests failed here they will fail on device too. Stop and read.
+
+######## STEP 2: Does the Pallas port actually lower on this GPU?
+  >> Highest-uncertainty step. REJECTED is a publishable result, not an outage.
+==========================================================================
+Pallas lowering probe
+==========================================================================
+  device: {'platform': 'gpu', 'kind': 'NVIDIA H100 80GB HBM3', 'count': 1, 'jax': '0.12.0.1'}
+
+  quantizer  UNSUPPORTED
+      reason: compiled Pallas is not supported on GPU for these kernels: they accumulate across a grid axis that must run sequentially, and JAX's Pallas GPU backend (Triton, in jax 0.12) runs grid programs in parallel. Measured on an H100: the quantizer compiled but returned 43.9% wrong bins. Use interpret=True (correct, runs on the GPU as JAX ops), a TPU, or the CUDA / Triton backends. (platform: gpu)
+
+  attention  UNSUPPORTED
+      reason: compiled Pallas is not supported on GPU for these kernels: they accumulate across a grid axis that must run sequentially, and JAX's Pallas GPU backend (Triton, in jax 0.12) runs grid programs in parallel. Measured on an H100: the quantizer compiled but returned 43.9% wrong bins. Use interpret=True (correct, runs on the GPU as JAX ops), a TPU, or the CUDA / Triton backends. (platform: gpu)
+
+  written to results/lowering_probe_h100.json
+  verdict: UNSUPPORTED
+
+######## STEP 3: Quantizer benchmark -- the op with three real backends
+  >> reference / cuda / triton / pallas on identical seeded inputs
+    triton         0.010 ms      -  MBU(unique)  0.94%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         0.142 ms      -  MBU(unique)  0.07%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+2048 x 128
+    reference      0.418 ms   1.00x  MBU(unique) n/a  [CPU (x86_64), compiled]
+    cuda           0.015 ms      -  MBU(unique)  2.55%  [NVIDIA H100 80GB HBM3, compiled]
+    triton         0.014 ms      -  MBU(unique)  2.83%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         0.330 ms      -  MBU(unique)  0.12%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+8192 x 128
+    reference      1.639 ms   1.00x  MBU(unique) n/a  [CPU (x86_64), compiled]
+    cuda           0.043 ms      -  MBU(unique)  3.68%  [NVIDIA H100 80GB HBM3, compiled]
+    triton         0.043 ms      -  MBU(unique)  3.68%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         1.239 ms      -  MBU(unique)  0.13%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+32768 x 128
+    reference     14.419 ms   1.00x  MBU(unique) n/a  [CPU (x86_64), compiled]
+    cuda           0.150 ms      -  MBU(unique)  4.19%  [NVIDIA H100 80GB HBM3, compiled]
+    triton         0.149 ms      -  MBU(unique)  4.19%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         4.881 ms      -  MBU(unique)  0.13%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+2048 x 128
+    reference      0.414 ms   1.00x  MBU(unique) n/a  [CPU (x86_64), compiled]
+    cuda           0.015 ms      -  MBU(unique)  2.54%  [NVIDIA H100 80GB HBM3, compiled]
+    triton         0.014 ms      -  MBU(unique)  2.82%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         0.330 ms      -  MBU(unique)  0.12%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+2048 x 128
+    reference      0.416 ms   1.00x  MBU(unique) n/a  [CPU (x86_64), compiled]
+    cuda           0.015 ms      -  MBU(unique)  2.55%  [NVIDIA H100 80GB HBM3, compiled]
+    triton         0.014 ms      -  MBU(unique)  2.83%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         0.340 ms      -  MBU(unique)  0.12%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+2048 x 64
+    reference      0.300 ms   1.00x  MBU(unique) n/a  [CPU (x86_64), compiled]
+    cuda           0.011 ms      -  MBU(unique)  1.80%  [NVIDIA H100 80GB HBM3, compiled]
+    triton         0.010 ms      -  MBU(unique)  1.88%  [NVIDIA H100 80GB HBM3, compiled]
+    pallas         0.340 ms      -  MBU(unique)  0.06%  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+
+Results written to results/three_backend_quantize_h100.json
+
+######## STEP 4: Attention benchmark -- full anchor sweep
+  >> cuda / pallas / reference. No Triton attention kernel exists in this repo.
+  timed_path_matches_dispatch  PASS
+  no_shape_specialization      PASS
+
+Anti-cheat: cuda
+  output_consumed              PASS
+  timed_path_matches_dispatch  PASS
+  no_shape_specialization      PASS
+
+Anti-cheat: pallas
+  output_consumed              PASS
+  timed_path_matches_dispatch  PASS
+  no_shape_specialization      PASS
+  kernel_lowered               SKIP  (interpret mode: kernel runs as JAX ops, no custom call exists to assert on)
+
+========================================================================
+ATTENTION  (reference / cuda / pallas -- no Triton attention kernel exists)
+========================================================================
+b8 h32 d128 s512   (unique 0.6 MB, streamed 84.7 MB)
+    reference      2.529 ms   1.00x  MBU(unique) n/a  streamed    33.5 GB/s  [CPU (x86_64), compiled]
+    cuda           0.104 ms      -  MBU(unique)  0.17%  streamed   816.8 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas        25.848 ms      -  MBU(unique)  0.00%  streamed     3.3 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+b8 h32 d128 s2048   (unique 1.6 MB, streamed 337.9 MB)
+    reference     11.068 ms   1.00x  MBU(unique) n/a  streamed    30.5 GB/s  [CPU (x86_64), compiled]
+    cuda           0.400 ms      -  MBU(unique)  0.12%  streamed   845.1 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas       105.345 ms      -  MBU(unique)  0.00%  streamed     3.2 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+b8 h32 d128 s8192   (unique 5.5 MB, streamed 1350.8 MB)
+    reference     43.968 ms   1.00x  MBU(unique) n/a  streamed    30.7 GB/s  [CPU (x86_64), compiled]
+    cuda           1.583 ms      -  MBU(unique)  0.10%  streamed   853.2 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas       423.258 ms      -  MBU(unique)  0.00%  streamed     3.2 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+b8 h32 d128 s32768   (unique 21.4 MB, streamed 5402.5 MB)
+    reference    175.272 ms   1.00x  MBU(unique) n/a  streamed    30.8 GB/s  [CPU (x86_64), compiled]
+    cuda           6.298 ms      -  MBU(unique)  0.10%  streamed   857.9 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas      1723.941 ms      -  MBU(unique)  0.00%  streamed     3.1 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+b1 h32 d128 s2048   (unique 1.4 MB, streamed 42.2 MB)
+    reference      2.042 ms   1.00x  MBU(unique) n/a  streamed    20.7 GB/s  [CPU (x86_64), compiled]
+    cuda           0.388 ms      -  MBU(unique)  0.10%  streamed   108.9 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas        13.002 ms      -  MBU(unique)  0.00%  streamed     3.2 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+b32 h32 d128 s2048   (unique 2.4 MB, streamed 1351.6 MB)
+    reference     42.976 ms   1.00x  MBU(unique) n/a  streamed    31.5 GB/s  [CPU (x86_64), compiled]
+    cuda           0.616 ms      -  MBU(unique)  0.11%  streamed  2192.7 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas       429.839 ms      -  MBU(unique)  0.00%  streamed     3.1 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+b8 h32 d64 s2048   (unique 0.8 MB, streamed 169.0 MB)
+    reference      7.376 ms   1.00x  MBU(unique) n/a  streamed    22.9 GB/s  [CPU (x86_64), compiled]
+    cuda           0.476 ms      -  MBU(unique)  0.05%  streamed   355.0 GB/s  [NVIDIA H100 80GB HBM3, compiled]
+    pallas       117.419 ms      -  MBU(unique)  0.00%  streamed     1.4 GB/s  [NVIDIA H100 80GB HBM3, interpret]  <- interpret: not a perf number
+    NOTE: mixed execution modes; ms is not comparable across them, so no ratio is shown.
+
+Results written to results/three_backend_attention_h100.json
+
+######## STEP 5: Real-model perplexity gate -- the long pole
+  >> model: meta-llama/Llama-2-7b-hf
+  >> If this is gated and unapproved it fails FAST here, after the cheap wins.
+{
+  "mode": "real_model",
+  "method": "fake-quantized post-RoPE keys inside attention (Cache.update hook)",
+  "model": "meta-llama/Llama-2-7b-hf",
+  "dataset": "Salesforce/wikitext/wikitext-2-raw-v1",
+  "device": "NVIDIA H100 80GB HBM3",
+  "tokens_scored": 20479,
+  "windows": 19,
+  "block_size": 256,
+  "granularity": "per (kv_head, 256-token block, channel), asymmetric, round-half-up",
+  "quantized": "keys only; values full precision",
+  "ppl_fp16": 4.5328,
+  "ppl_int4_keys": 4.5515,
+  "delta_percent": 0.414,
+  "evidence": {
+    "hook_calls": 608,
+    "expected_hook_calls": 608,
+    "max_abs_key_change": 0.87109375
+  },
+  "gate_threshold_percent": 0.3,
+  "gate_pass": false
+}
+
+Results written to results/perplexity_h100.json
+Perplexity gate NOT passed (threshold 0.3%). This is a measured result, not a harness failure -- report it.
+
+######## ARTIFACTS
+-rw-r--r-- 1 root root  1071 Nov 17 22:44 results/lowering_probe_h100.json
+-rw-r--r-- 1 root root   683 Nov 17 22:52 results/perplexity_h100.json
+-rw-r--r-- 1 root root 15213 Nov 17 22:45 results/three_backend_attention_h100.json
+-rw-r--r-- 1 root root 12629 Nov 17 22:44 results/three_backend_quantize_h100.json
+
+Before you destroy the instance, copy results/ off the box:
+
+    tar czf h100-results.tar.gz results/
+    # then scp / runpodctl / the provider's file browser
+
+Nothing in results/ is reproducible without the GPU. Everything else in this
+repo is.
+RUN_DONE

@@ -1,0 +1,18 @@
+{
+  "device": {
+    "platform": "gpu",
+    "kind": "NVIDIA H100 80GB HBM3",
+    "count": 1,
+    "jax": "0.12.0.1"
+  },
+  "probes": {
+    "quantizer": {
+      "status": "UNSUPPORTED",
+      "reason": "compiled Pallas is not supported on GPU for these kernels: they accumulate across a grid axis that must run sequentially, and JAX's Pallas GPU backend (Triton, in jax 0.12) runs grid programs in parallel. Measured on an H100: the quantizer compiled but returned 43.9% wrong bins. Use interpret=True (correct, runs on the GPU as JAX ops), a TPU, or the CUDA / Triton backends. (platform: gpu)"
+    },
+    "attention": {
+      "status": "UNSUPPORTED",
+      "reason": "compiled Pallas is not supported on GPU for these kernels: they accumulate across a grid axis that must run sequentially, and JAX's Pallas GPU backend (Triton, in jax 0.12) runs grid programs in parallel. Measured on an H100: the quantizer compiled but returned 43.9% wrong bins. Use interpret=True (correct, runs on the GPU as JAX ops), a TPU, or the CUDA / Triton backends. (platform: gpu)"
+    }
+  }
+}

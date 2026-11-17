@@ -1,0 +1,22 @@
+{
+  "mode": "real_model",
+  "method": "fake-quantized post-RoPE keys inside attention (Cache.update hook)",
+  "model": "meta-llama/Llama-2-7b-hf",
+  "dataset": "Salesforce/wikitext/wikitext-2-raw-v1",
+  "device": "NVIDIA H100 80GB HBM3",
+  "tokens_scored": 20479,
+  "windows": 19,
+  "block_size": 256,
+  "granularity": "per (kv_head, 256-token block, channel), asymmetric, round-half-up",
+  "quantized": "keys only; values full precision",
+  "ppl_fp16": 4.5328,
+  "ppl_int4_keys": 4.5515,
+  "delta_percent": 0.414,
+  "evidence": {
+    "hook_calls": 608,
+    "expected_hook_calls": 608,
+    "max_abs_key_change": 0.87109375
+  },
+  "gate_threshold_percent": 0.3,
+  "gate_pass": false
+}

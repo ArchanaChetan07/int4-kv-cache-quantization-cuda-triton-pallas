@@ -1,0 +1,19 @@
+{
+  "device": "NVIDIA H100 80GB HBM3",
+  "jax": "0.12.0.1",
+  "backend": "Pallas default GPU lowering (Triton)",
+  "guard": "bypassed deliberately",
+  "quantizer": {
+    "shape": [
+      1024,
+      128
+    ],
+    "max_bin_diff": 4,
+    "bins_wrong_fraction": 0.28864288330078125,
+    "scales_match": false
+  },
+  "attention": {
+    "max_abs_diff_vs_reference": 5.435556411743164,
+    "nan_present": false
+  }
+}

@@ -1,0 +1,5 @@
+jax 0.12.0.1 NVIDIA H100 80GB HBM3
+  mosaic_gpu: trivial elementwise                            AssertionError: 
+  accumulator  mosaic_gpu  dimension_semantics=('sequential',) AssertionError: 
+  accumulator  mosaic_gpu  dimension_semantics=('parallel',) AssertionError: 
+  accumulator  triton backend (the default)                  max error 98.0  ->  RACE / WRONG

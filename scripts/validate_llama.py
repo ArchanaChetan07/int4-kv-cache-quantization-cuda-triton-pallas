@@ -279,7 +279,8 @@ def _load_model(model_name: str, device: str):
 
 
 def validate_with_model(model_name: str, dataset: str, dataset_config: str,
-                        max_samples: int, text_file: str = None) -> dict:
+                        max_samples: int, text_file: str = None,
+                        block_size: int = BLOCK_SIZE) -> dict:
     """Measure the perplexity delta from INT4 keys on a real model."""
     try:
         import torch
@@ -299,7 +300,8 @@ def validate_with_model(model_name: str, dataset: str, dataset_config: str,
     input_ids = input_ids[:, :min(input_ids.size(1), max_samples * stride)].to(device)
 
     base = perplexity(model, input_ids, quantize_keys=False, stride=stride)
-    int4 = perplexity(model, input_ids, quantize_keys=True, stride=stride)
+    int4 = perplexity(model, input_ids, quantize_keys=True, stride=stride,
+                      block_size=block_size)
     delta_pct = (int4['ppl'] - base['ppl']) / base['ppl'] * 100
 
     return {
@@ -310,8 +312,9 @@ def validate_with_model(model_name: str, dataset: str, dataset_config: str,
         'device': torch.cuda.get_device_name(0) if device == 'cuda' else 'cpu',
         'tokens_scored': base['tokens'],
         'windows': base['windows'],
-        'block_size': BLOCK_SIZE,
-        'granularity': 'per (kv_head, 256-token block, channel), asymmetric, round-half-up',
+        'block_size': block_size,
+        'granularity': f'per (kv_head, {block_size}-token block, channel), asymmetric, '
+                       'round-half-up',
         'quantized': 'keys only; values full precision',
         'ppl_fp16': round(base['ppl'], 4),
         'ppl_int4_keys': round(int4['ppl'], 4),
@@ -333,6 +336,9 @@ def main():
     parser.add_argument('--dataset-config', default='wikitext-2-raw-v1')
     parser.add_argument('--text-file', default=None,
                         help='evaluate on a local text file instead of downloading')
+    parser.add_argument('--block-size', type=int, default=BLOCK_SIZE,
+                        help='tokens per INT4 scale group (the paged-KV block size); '
+                             '256 measured +0.414%% on Llama-2-7B, 128 measured +0.292%%')
     parser.add_argument('--max-samples', type=int, default=20,
                         help='number of 1024-token strides to evaluate')
     parser.add_argument('--simulate', action='store_true',
@@ -346,7 +352,7 @@ def main():
     else:
         print(f"Validating on real model: {args.model}")
         result = validate_with_model(args.model, args.dataset, args.dataset_config,
-                                     args.max_samples, args.text_file)
+                                     args.max_samples, args.text_file, args.block_size)
 
     print(json.dumps(result, indent=2))
 

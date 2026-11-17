@@ -48,6 +48,35 @@ def _gpu():
     return OK, out.replace("\n", " | ")
 
 
+@check("GPU not occupied by another process")
+def _gpu_free():
+    """Runs before any torch/JAX check, which would create contexts of our own.
+
+    Found on a real rental: the vast.ai template had started a vLLM server
+    that held 73 GB of the H100's 80 GB, starving JAX and leaving no room for
+    the model weights.
+    """
+    out = subprocess.run(
+        ["nvidia-smi", "--query-compute-apps=pid,used_memory,process_name",
+         "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()
+    others = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2 or parts[0] == str(os.getpid()):
+            continue
+        mib = parts[1].split()[0] if parts[1] else ""
+        # Windows (WDDM) lists every graphics client with memory "[N/A]"; only
+        # a process holding real memory -- 1 GiB or more -- blocks the run.
+        if mib.isdigit() and int(mib) >= 1024:
+            others.append(line)
+    if not others:
+        return OK, "no other process holds >= 1 GiB of GPU memory"
+    return FAIL, (f"{len(others)} other process(es) hold GPU memory: {others[0]}\n"
+                  f"          A provider template may have started a server (e.g. vLLM).\n"
+                  f"          Stop it (`supervisorctl stop vllm`), then kill any orphaned\n"
+                  f"          child such as VLLM::EngineCore, and re-run preflight.")
+
+
 @check("Compute capability >= 9.0 (Mosaic GPU needs Hopper)", required=False)
 def _hopper():
     out = subprocess.run(

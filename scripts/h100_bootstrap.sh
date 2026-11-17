@@ -88,6 +88,8 @@ fi
 say "Triton"
 python -m pip install --quiet triton || echo "triton install failed - that leg will skip"
 
+. "$REPO_ROOT/scripts/h100_cuda_env.sh"   # header path + JAX preallocation
+
 say "Build the CUDA extension"
 FLASH_DECODE_JIT_CUDA=1 python -c "
 from src import ops

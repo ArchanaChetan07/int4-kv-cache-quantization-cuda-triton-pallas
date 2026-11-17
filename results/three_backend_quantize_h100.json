@@ -1,0 +1,439 @@
+{
+  "sweep": "full",
+  "sweep_note": "Pallas in interpret mode cannot run the full anchor sweep in useful time (thousands of grid steps per call, each a few ms); interpret mode is a correctness vehicle. The full sweep needs TPU or Hopper.",
+  "host": {
+    "platform": "Linux-5.15.0-122-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "backend_status": {
+    "has_torch": true,
+    "has_cuda": true,
+    "has_triton": true,
+    "has_jax": true,
+    "jax_devices": [
+      "gpu"
+    ],
+    "pallas_interpret_default": true,
+    "active_backend": "cuda",
+    "available_backends": [
+      "reference",
+      "cuda",
+      "triton",
+      "pallas"
+    ]
+  },
+  "rules": {
+    "timed_region": "kernel launches on device-resident inputs only; staging and copies excluded (src/_prepared.py)",
+    "ms_comparable": "within a single device and execution mode only",
+    "cross_device_metric": "mbu_unique_percent (true utilization, lower bound on DRAM traffic)",
+    "streamed_read_gbps": "throughput, not utilization; can exceed DRAM peak because programs share one page stream and L2 serves repeats",
+    "peak_bandwidth": "vendor spec sheet",
+    "sweep_fixed_before_timing": true,
+    "correctness_gate": "no row is timed unless its output matches the NumPy reference on that configuration"
+  },
+  "backends": {
+    "reference": {
+      "available": true,
+      "reason": null,
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled"
+    },
+    "cuda": {
+      "available": true,
+      "reason": null,
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled"
+    },
+    "triton": {
+      "available": true,
+      "reason": null,
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled"
+    },
+    "pallas": {
+      "available": true,
+      "reason": null,
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret"
+    }
+  },
+  "rows": [
+    {
+      "op": "quantize",
+      "rows": 512,
+      "channels": 128,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.12060010340064764,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 328704,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 512,
+      "channels": 128,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.010527053382247686,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 328704,
+      "mbu_unique_percent": 0.9320803595466821,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 512,
+      "channels": 128,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.01043855445459485,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 328704,
+      "mbu_unique_percent": 0.9399826138928133,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 512,
+      "channels": 128,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 0.14200814766809344,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 328704,
+      "mbu_unique_percent": 0.06909504745055642,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.4182083997875452,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.015352596528828142,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 2.550483056068538,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.013820093590766191,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 2.833304785981698,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 0.33030849881470203,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 0.11854535216000921,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 8192,
+      "channels": 128,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 1.6386274481192231,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 5243904,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 8192,
+      "channels": 128,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.042517646215856075,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 5243904,
+      "mbu_unique_percent": 3.6816348432481605,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 8192,
+      "channels": 128,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.0425396952778101,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 5243904,
+      "mbu_unique_percent": 3.679726588047442,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 8192,
+      "channels": 128,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 1.2393936514854431,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 5243904,
+      "mbu_unique_percent": 0.12629921701921235,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 32768,
+      "channels": 128,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 14.419437106698751,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 20972544,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 32768,
+      "channels": 128,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.14955420047044754,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 20972544,
+      "mbu_unique_percent": 4.1860816184560985,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 32768,
+      "channels": 128,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.1492831506766379,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 20972544,
+      "mbu_unique_percent": 4.193682185260926,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 32768,
+      "channels": 128,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 4.880677198525518,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 20972544,
+      "mbu_unique_percent": 0.12827033300652851,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.4141489043831825,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.015409593470394611,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 2.5410493397286302,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.013904552906751633,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 2.81609466884905,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 0.32971149776130915,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 0.11875999951260346,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.4156838986091316,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.015355600044131279,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 2.549984188237436,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.013843050692230463,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 2.828606077084569,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 128,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 0.3404835471883416,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 1311744,
+      "mbu_unique_percent": 0.11500272960846779,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 64,
+      "backend": "reference",
+      "device": "CPU (x86_64)",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.3002413548529148,
+      "peak_bandwidth_gbs": null,
+      "unique_bytes": 655872,
+      "mbu_unique_percent": null,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 64,
+      "backend": "cuda",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.010902551002800465,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 655872,
+      "mbu_unique_percent": 1.7957511642630684,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 64,
+      "backend": "triton",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "compiled",
+      "ms_per_call": 0.01039555063471198,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 655872,
+      "mbu_unique_percent": 1.883331566039633,
+      "verified_against_reference": true
+    },
+    {
+      "op": "quantize",
+      "rows": 2048,
+      "channels": 64,
+      "backend": "pallas",
+      "device": "NVIDIA H100 80GB HBM3",
+      "execution_mode": "interpret",
+      "ms_per_call": 0.3403095528483391,
+      "peak_bandwidth_gbs": 3350.0,
+      "unique_bytes": 655872,
+      "mbu_unique_percent": 0.05753076424934092,
+      "verified_against_reference": true
+    }
+  ],
+  "backends_by_op": {
+    "quantize": [
+      "reference",
+      "cuda",
+      "triton",
+      "pallas"
+    ],
+    "attention": [
+      "reference",
+      "cuda",
+      "pallas"
+    ]
+  }
+}

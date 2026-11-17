@@ -27,6 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 export FLASH_DECODE_JIT_CUDA="${FLASH_DECODE_JIT_CUDA:-1}"
+. "$REPO_ROOT/scripts/h100_cuda_env.sh"   # header path + JAX preallocation
 mkdir -p results
 
 STEP=0
