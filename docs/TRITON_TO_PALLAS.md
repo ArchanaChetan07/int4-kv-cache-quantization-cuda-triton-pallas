@@ -36,7 +36,9 @@ got wrong.
 | 13 | Per-channel reduction is the fast TPU direction | **UNRESOLVED** | No tiling model in interpret mode. |
 | 14 | Grid steps are sequential, not independent | **CONFIRMED on TPU, FALSE on GPU** | Load-bearing: the accumulator design rests on it. True for Mosaic TPU and interpret mode; on an H100 the Pallas GPU backend runs grid programs in parallel and both kernels race. §3.3, §5.7 |
 
-**10 confirmed, 1 refuted, 3 unresolved.** The three unresolved rows all require
+**10 confirmed, 1 refuted, 3 unresolved.** One confirmed row, 14, holds only for
+the platform it was predicted for: the sequential grid is a TPU guarantee, and the
+H100 run showed the GPU backend breaks it (§5.7). The three unresolved rows all require
 TPU access and are the honest limit of what this port established.
 
 ---
@@ -334,7 +336,7 @@ the TPU fact. The H100 run (JAX 0.12.0.1) showed the other half:
   sequential `dimension_semantics`, registers no `pallas_call` lowering rule in
   that release, so asking for it fails with a bare `assert rule is not None`.
 - On the Triton backend, grid programs run in parallel. An isolated 32-step
-  accumulation returned max error 97-98. The quantizer compiled and put 29-44%
+  accumulation returned max error 98. The quantizer compiled and put 28.9%
   of bins wrong; attention compiled and was off by up to 5.4. Nothing raised,
   and nothing was NaN (`results/pallas_compiled_on_gpu_h100.json`).
 

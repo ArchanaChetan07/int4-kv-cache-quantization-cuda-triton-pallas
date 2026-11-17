@@ -32,7 +32,7 @@ Design rules, fixed before any backend was timed:
     exact configuration (quantizer: the parity-test contract; attention: max
     abs diff < ATTENTION_TOLERANCE). Finite is not the same as correct: on an
     H100, the Pallas quantizer compiled on the Triton backend, raced, and
-    produced plausible-looking wrong bins in 0.049 ms -- a number this rule
+    produced finite, plausible-looking wrong bins -- a timing this rule
     now refuses to publish.
 
 Anti-cheat assertions run inside the harness; see _anticheat().

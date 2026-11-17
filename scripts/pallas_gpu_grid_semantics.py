@@ -7,7 +7,7 @@ under every Pallas GPU lowering path, and reports whether the result is right.
 Measured on an NVIDIA H100 80GB HBM3, JAX 0.12.0.1 (results/pallas_gpu_grid_semantics_h100.txt):
   Mosaic GPU, any dimension_semantics  -> AssertionError (no pallas_call lowering rule
                                           is registered for Mosaic GPU in this release)
-  Triton backend (the default)         -> max error 97.0: grid programs run in
+  Triton backend (the default)         -> max error 98.0: grid programs run in
                                           parallel and the accumulator races
 
     python scripts/pallas_gpu_grid_semantics.py
