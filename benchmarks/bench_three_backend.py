@@ -447,7 +447,12 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
         small = min(sweep, key=lambda c: c["seq_len"] * c["batch"])
         for name in live_a:
             print(f"\nAnti-cheat: {name}")
-            checks = _anticheat(name, small)
+            # A backend that cannot even run (e.g. Mosaic GPU rejecting the
+            # Pallas kernel) must not take the other backends' rows down.
+            try:
+                checks = _anticheat(name, small)
+            except Exception as exc:
+                checks = {"anticheat": {"pass": False, "error": repr(exc)[:500]}}
             results["backends"][name]["anticheat"] = checks
             for k, v in checks.items():
                 verdict = {True: "PASS", False: "FAIL", None: "SKIP"}[v.get("pass")]
