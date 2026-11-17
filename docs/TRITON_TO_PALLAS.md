@@ -34,7 +34,7 @@ got wrong.
 | 11 | `qf.to(tl.int32)` → `jnp.floor(x+0.5)` | **CONFIRMED** transfers | Exact: 0.000% bin disagreement against the oracle. |
 | 12 | No thread/occupancy dial exists | **CONFIRMED** misleads | Stronger than predicted — block size changes *nothing*. §3.5 |
 | 13 | Per-channel reduction is the fast TPU direction | **UNRESOLVED** | No tiling model in interpret mode. |
-| 14 | Grid steps are sequential, not independent | **CONFIRMED** misleads | Load-bearing: the whole accumulator design rests on it. §3.3 |
+| 14 | Grid steps are sequential, not independent | **CONFIRMED on TPU, FALSE on GPU** | Load-bearing: the accumulator design rests on it. True for Mosaic TPU and interpret mode; on an H100 the Pallas GPU backend runs grid programs in parallel and both kernels race. §3.3, §5.7 |
 
 **10 confirmed, 1 refuted, 3 unresolved.** The three unresolved rows all require
 TPU access and are the honest limit of what this port established.
@@ -322,6 +322,28 @@ The kernel is latency-bound. The benchmark now reports unique-byte utilization
 as the only quantity it calls a utilization, and streamed throughput in GB/s,
 flagged whenever it exceeds peak. The proposal is left as written: it was
 pre-registered, and editing it after the fact would defeat the point.
+
+### 5.7 On an H100, the Triton intuition was the right one
+
+Hypothesis 14 predicted that a Triton programmer's instinct -- grid programs
+are independent and may run in any order -- would mislead on TPU, where the
+grid runs sequentially. It did, and the whole accumulator design was built on
+the TPU fact. The H100 run (JAX 0.12.0.1) showed the other half:
+
+- `pallas_call` reaches only the **Triton** backend. Mosaic GPU, which supports
+  sequential `dimension_semantics`, registers no `pallas_call` lowering rule in
+  that release, so asking for it fails with a bare `assert rule is not None`.
+- On the Triton backend, grid programs run in parallel. An isolated 32-step
+  accumulation returned max error 97-98. The quantizer compiled and put 29-44%
+  of bins wrong; attention compiled and was off by up to 5.4. Nothing raised,
+  and nothing was NaN (`results/pallas_compiled_on_gpu_h100.json`).
+
+So the decomposition the port spent its effort learning is TPU-specific, and
+the GPU-correct decomposition moves the reduction loop back inside each
+program -- the Triton mental model the port had to unlearn. The kernels now
+refuse to compile for GPU with that explanation, and GPU hosts run them in
+interpret mode. The lesson generalises past this repo: in Pallas, *which*
+intuition misleads depends on the backend, not just on the language.
 
 ## 6. Would I tell someone to make this transition?
 

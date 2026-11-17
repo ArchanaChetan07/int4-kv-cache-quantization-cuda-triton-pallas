@@ -15,6 +15,8 @@ estimated or illustrative. Sources:
   compression  bytes held by INT4PagedKVCache's actual arrays.
   snr          scripts/validate_llama.py --simulate.
   quantizer    results/three_backend_t1000.json (bench_three_backend.py).
+  perplexity   results/perplexity_block_sweep_h100.json
+               (scripts/perplexity_block_sweep.py).
 
     python scripts/make_pallas_charts.py
 """
@@ -306,6 +308,119 @@ def t1000_quantizer_chart():
     print("wrote", out)
 
 
+
+# ---------------------------------------------------------------------------
+# 6. H100 vs T1000, from the committed artifacts
+# ---------------------------------------------------------------------------
+
+def h100_chart():
+    import json
+
+    def load(name):
+        with open(os.path.join(HERE, "results", name)) as f:
+            return json.load(f)["rows"]
+
+    def attn(rows):
+        return {r["seq_len"]: r["ms_per_call"] for r in rows
+                if r.get("op") == "attention" and r.get("backend") == "cuda"
+                and "ms_per_call" in r and r["batch"] == 8 and r["heads"] == 32
+                and r["head_dim"] == 128}
+
+    t1000 = attn(load("three_backend_t1000.json"))
+    h100 = attn(load("three_backend_attention_h100.json"))
+    seqs = sorted(set(t1000) & set(h100))
+
+    qrows = [r for r in load("three_backend_quantize_h100.json")
+             if "ms_per_call" in r and r["channels"] == 128
+             and r["backend"] in ("cuda", "triton")]
+    by = {}
+    for r in qrows:
+        by.setdefault(r["rows"], {}).setdefault(r["backend"], []).append(r["ms_per_call"])
+    sizes = sorted(k for k, v in by.items() if {"cuda", "triton"} <= set(v))
+
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11.0, 4.3), dpi=160)
+    a1.plot(seqs, [t1000[s] for s in seqs], "o-", color=MUTED, lw=2, label="NVIDIA T1000")
+    a1.plot(seqs, [h100[s] for s in seqs], "o-", color=TEAL, lw=2, label="NVIDIA H100 SXM")
+    for s in seqs:
+        a1.annotate(f"{t1000[s] / h100[s]:.1f}x", (s, h100[s]), textcoords="offset points",
+                    xytext=(0, -14), ha="center", fontsize=8, color=TEAL)
+    a1.set_xscale("log", base=2); a1.set_yscale("log")
+    a1.set_xticks(seqs); a1.set_xticklabels([str(s) for s in seqs])
+    a1.set_xlabel("sequence length (batch 8, 32 heads, head_dim 128)", fontsize=9)
+    a1.set_ylabel("ms per call, kernel only (log)", fontsize=9)
+    a1.set_title("CUDA attention: T1000 vs H100", fontsize=10.5, color=INK,
+                 weight="bold", loc="left")
+    a1.legend(frameon=False, fontsize=8.5)
+    a1.grid(color=RULE, lw=0.7, which="both")
+    _style(a1)
+
+    x = np.arange(len(sizes))
+    cuda = [float(np.median(by[n]["cuda"])) for n in sizes]
+    tri = [float(np.median(by[n]["triton"])) for n in sizes]
+    a2.bar(x - 0.19, cuda, 0.36, color=TEAL, label="CUDA", zorder=3)
+    a2.bar(x + 0.19, tri, 0.36, color=AMBER, label="Triton", zorder=3)
+    a2.set_yscale("log")
+    a2.set_xticks(x); a2.set_xticklabels([f"{n:,} x 128" for n in sizes], fontsize=8.5)
+    a2.set_ylabel("ms per call (log)", fontsize=9)
+    a2.set_title("INT4 quantizer on the H100: CUDA and Triton tie", fontsize=10.5,
+                 color=INK, weight="bold", loc="left")
+    a2.legend(frameon=False, fontsize=8.5, loc="upper left")
+    a2.grid(axis="y", color=RULE, lw=0.7, zorder=0)
+    _style(a2)
+
+    fig.suptitle("Kernel-only timings on device-resident inputs, every row verified "
+                 "against the NumPy reference before timing", fontsize=8.5, color=MUTED,
+                 x=0.01, ha="left", y=1.0)
+    fig.tight_layout()
+    out = os.path.join(OUT, "h100_results.png")
+    fig.savefig(out, facecolor="white", bbox_inches="tight")
+    plt.close(fig)
+    print("wrote", out)
+
+
+
+# ---------------------------------------------------------------------------
+# 7. perplexity cost vs key compression, Llama-2-7B on the H100
+# ---------------------------------------------------------------------------
+
+def perplexity_tradeoff_chart():
+    import json
+    with open(os.path.join(HERE, "results", "perplexity_block_sweep_h100.json")) as f:
+        d = json.load(f)
+    rows = sorted(d["rows"], key=lambda r: r["key_compression_vs_fp16"])
+    x = [r["key_compression_vs_fp16"] for r in rows]
+    y = [r["delta_percent"] for r in rows]
+
+    fig, ax = plt.subplots(figsize=(8.0, 4.4), dpi=160)
+    ax.axhline(0.3, color=RED, ls=":", lw=1.4, zorder=2)
+    ax.text(x[0] - 0.05, 0.305, "quality target: +0.3% perplexity", color=RED,
+            fontsize=8.5, weight="bold", va="bottom")
+    ax.plot(x, y, "-", color=RULE, lw=2, zorder=2)
+    for r in rows:
+        ok = r["gate_0_3_pass"]
+        ax.scatter(r["key_compression_vs_fp16"], r["delta_percent"], s=90, zorder=3,
+                   color=TEAL if ok else RED, edgecolor="white", linewidth=1.2)
+        ax.annotate(f"{r['block_size']} tokens/scale\n+{r['delta_percent']:.3f}%",
+                    (r["key_compression_vs_fp16"], r["delta_percent"]),
+                    textcoords="offset points", xytext=(0, 12), ha="center",
+                    fontsize=8.2, color=INK)
+    ax.set_xlabel("key-cache compression vs FP16 (x)", fontsize=9.5)
+    ax.set_ylabel("perplexity increase (%)", fontsize=9.5)
+    ax.set_ylim(0, max(y) * 1.35)
+    ax.set_xlim(min(x) - 0.25, max(x) + 0.25)
+    ax.set_title(f"INT4 keys on Llama-2-7B: quality vs compression\n"
+                 f"WikiText-2, {d['tokens_scored']:,} tokens, H100 "
+                 f"(results/perplexity_block_sweep_h100.json)",
+                 fontsize=10.5, color=INK, weight="bold", loc="left")
+    ax.grid(color=RULE, lw=0.7, zorder=0)
+    _style(ax)
+    fig.tight_layout()
+    out = os.path.join(OUT, "perplexity_tradeoff.png")
+    fig.savefig(out, facecolor="white", bbox_inches="tight")
+    plt.close(fig)
+    print("wrote", out)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     accuracy_chart()
@@ -313,3 +428,5 @@ if __name__ == "__main__":
     compression_chart()
     snr_chart()
     t1000_quantizer_chart()
+    h100_chart()
+    perplexity_tradeoff_chart()

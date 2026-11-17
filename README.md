@@ -11,8 +11,9 @@
 
 Per-channel asymmetric **INT4 quantization** of the KV cache's keys, fused with a
 **warp-parallel flash-decoding attention kernel** that dequantizes in registers, so
-the FP32 key matrix is never materialized — a **3.76× smaller key cache** (1.58× for
-the whole KV cache, since values stay FP16). One algorithm, implemented three times —
+the FP32 key matrix is never materialized — a **3.56× smaller key cache at +0.29%
+Llama-2-7B perplexity** (128-token scale groups; 3.76× at 256 tokens, where the cost
+is +0.41%), about 1.56× for the whole KV cache since values stay FP16. One algorithm, implemented three times —
 **CUDA**, **[Triton](https://github.com/triton-lang/triton)** (quantizer) and
 **[Pallas/JAX](https://docs.jax.dev/en/latest/pallas/)** (quantizer + attention) —
 every implementation validated against a single NumPy oracle. Designed toward
@@ -50,6 +51,7 @@ All numbers are measured in this repository and reproducible with the commands s
 |---|---|---|
 | Test suite, GPU mode (`FLASH_DECODE_JIT_CUDA=1`) | **121 passing** (4 skips: JAX not installed in that env) | NVIDIA T1000, CUDA 12.5 |
 | Test suite, JAX environment (Pallas interpret mode) | 96 passing | any machine, no GPU needed |
+| Test suite with every backend installed | **154 passing, 0 skipped** | NVIDIA H100 80GB HBM3 |
 | Triton quantizer port vs reference | parity via interpreter mode | CI (CPU runners) |
 | Pallas quantizer port vs reference | **0.000% bin disagreement**, scales rtol 1e-4 | CI (CPU, interpret mode) |
 | Pallas attention vs float64 evaluation | within **1.4x of the float32 accumulation floor** on every tested platform | CI (CPU, interpret mode) |
@@ -59,7 +61,11 @@ All numbers are measured in this repository and reproducible with the commands s
 | Fused INT4 attention — *agreement* with FP32 reference (head_dim 64) | **MAE 3.1 × 10⁻⁸** | T1000 |
 | Variable-length + empty-block edge cases | MAE ≤ 3.4 × 10⁻⁸ | T1000 |
 | Attention kernel latency (batch 8 × 32 heads × dim 128 × seq 2048), kernel only | **2.24 ms** median of 9 runs (2.13–2.68 ms); 3.05 ms in the committed sweep — clocks unlocked, so runs vary ±24% | T1000 |
+| Attention kernel latency, same shape, kernel only | **0.400 ms** — 3.8–7.6× faster than the T1000 across the sweep | H100 SXM |
 | INT4 quantizer, CUDA vs Triton, same device | CUDA faster at every size: 1.05× to 1.62× | T1000 |
+| INT4 quantizer, CUDA vs Triton, same device | **tie** at every size (within 0.001 ms) | H100 SXM |
+| Perplexity, Llama-2-7B, WikiText-2, INT4 keys, **128-token groups** | **+0.292%** (4.5328 → 4.5460) — passes the 0.3% target at 3.56× key compression | H100 SXM |
+| Same, 256-token groups | +0.414% — misses the target; the sweep below shows the trade-off | H100 SXM |
 | Key-cache compression vs FP16 (per-256-token-block scales) | **3.76×** measured from the cache's arrays; **1.58×** for the whole KV | — |
 | KV quantization SNR (per-block scales, Gaussian worst case) | 19.26 dB, **+1.72 dB** vs whole-sequence scales | — |
 
@@ -100,6 +106,25 @@ programs read one shared page stream, and at the anchor shape the kernel uses
 exceeds the 160 GB/s DRAM peak at short sequences (213 GB/s at s512) — L2 serving the
 shared stream. The cost is the per-position warp-shuffle reduction and serial
 softmax update, which makes tiling several positions per warp the next optimization.
+The H100 confirms it: about 0.1% unique-byte utilization of its 3.35 TB/s.
+
+<p align="center">
+  <img src="docs/assets/h100_results.png" alt="CUDA attention on T1000 vs H100; CUDA and Triton quantizers tie on the H100" width="860">
+</p>
+
+**The H100 run** (`results/*_h100.*`, ~$4 on vast.ai): 154 tests pass; the CUDA
+attention kernel runs 3.8–7.6× faster than on the T1000 across the sweep; the CUDA
+and Triton quantizers tie, where the T1000 favoured CUDA by up to 1.6×; and the
+real-model gate passes. On Llama-2-7B, INT4 keys in 256-token scale groups cost
++0.414% perplexity — over the 0.3% target — so the group size was swept. **128-token
+groups cost +0.292% and pass**, at 3.56× key compression instead of 3.76×. Every
+kernel takes the page size at runtime, so that is a configuration change, not a
+code change. Each measurement's evidence block confirms all 608 expected INT4 hook
+calls fired, and the 256-token result reproduced exactly on a second run.
+
+<p align="center">
+  <img src="docs/assets/perplexity_tradeoff.png" alt="Perplexity increase vs key compression for 256, 128, 64 and 32 tokens per scale" width="640">
+</p>
 
 ---
 
@@ -142,6 +167,16 @@ Pallas has **no CPU code generator** (`interpret=False` on CPU raises
 **Hopper/Blackwell**, and the Pallas **Triton backend is deprecated**. A Turing
 T1000 sits below both live GPU floors — so correctness runs anywhere via
 `interpret=True`, while the performance leg needs TPU v5e or Hopper.
+
+**On an H100 the answer turned out sharper.** In JAX 0.12.0.1, `pallas_call`
+reaches only the Triton backend — Mosaic GPU registers no `pallas_call` lowering
+rule — and Triton runs grid programs in parallel. Both kernels accumulate
+across a grid axis that must run in order, so compiled on the H100 they race:
+the quantizer put 29–44% of bins wrong, attention was off by up to 5.4, and
+nothing raised (`results/pallas_compiled_on_gpu_h100.json`). Compiled Pallas is
+therefore **TPU-only as written**; on GPU it is refused with that explanation,
+and GPU hosts run it in interpret mode. `scripts/pallas_gpu_grid_semantics.py`
+reproduces the race in 30 lines.
 
 ### Three-backend architecture
 
@@ -355,8 +390,9 @@ print(cache.memory_stats())                           # live compression ratio
 ### Real-model perplexity validation (≥16 GB GPU + Llama weights)
 
 ```bash
-python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
-    --output results/perplexity_llama7b.json          # hard <0.3% PPL gate
+python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf --block-size 128 \
+    --output results/perplexity_llama7b.json          # hard <0.3% PPL gate: passes
+python scripts/perplexity_block_sweep.py              # 256/128/64/32 trade-off, ~10 s after load
 ```
 
 ---
@@ -397,7 +433,8 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 | CUDA kernel shape boundaries | `test_ops_dispatch.py` | head_dim 1–256, ragged pages | ✅ |
 | Perplexity harness measures INT4 keys | `test_perplexity_harness.py` | hook fires; loss changes | ✅ |
 | SNR simulation (worst case) | `validate_llama.py --simulate` | < 0.5% est. PPL | ✅ |
-| Real-model perplexity | `validate_llama.py` | < 0.3% PPL delta | pending (needs ≥16 GB GPU) |
+| Real-model perplexity, Llama-2-7B | `validate_llama.py --block-size 128` | < 0.3% PPL delta | ✅ **+0.292%** on an H100 (256-token groups: +0.414%) |
+| No timing for a wrong answer | `bench_three_backend.py` | output matches reference before timing | ✅ rejected a racing kernel on the H100 |
 
 ## Scope and limitations
 
@@ -414,8 +451,14 @@ Stated plainly, so a reviewer does not have to discover them:
   post-RoPE keys inside PyTorch attention, which measures the accuracy cost of the
   INT4 scheme; the kernels' agreement with that scheme is established separately by
   the parity tests.
-- **Pallas has never been compiled.** All Pallas results are interpret mode; the
-  lowering probe (`scripts/pallas_lowering_probe.py`) needs TPU or Hopper hardware.
+- **Compiled Pallas is TPU-only as written.** On an H100 it compiled through the
+  Triton backend and raced (measured, above); it is refused on GPU and runs in
+  interpret mode there. The TPU leg, where the design is sequential by
+  construction, is still untested.
+- **The quality target needs 128-token scale groups.** On Llama-2-7B, 256-token
+  groups cost +0.414% perplexity; 128 cost +0.292% (passes, narrowly) and 64 cost
+  +0.238%. One model and 20,479 WikiText-2 tokens: the margin at 128 is thin, so a
+  serving deployment would validate on its own models and data.
 - **T1000 timings vary ±24%.** Boost clocks cannot be locked without admin rights, so
   report medians and ranges, not single runs.
 - **The serial v1 kernel is not in this repository.** An early serial version timed at
@@ -436,7 +479,10 @@ Stated plainly, so a reviewer does not have to discover them:
 - [x] INT4 nibble packing (2 values/byte) in the cache storage path
 - [x] JIT build path + packaging + CI + Docker
 - [ ] Packed-native kernel decode (read nibbles directly in the attention kernel)
-- [ ] Real-model perplexity gate on Llama-2-7B/13B/70B (needs ≥16 GB GPU)
+- [x] H100 run: CUDA + Triton on datacenter hardware; compiled Pallas measured racing on GPU
+- [x] Real-model perplexity, Llama-2-7B: +0.292% at 128-token groups — passes the 0.3% target
+- [x] Group-size sweep (256/128/64/32): the quality/compression trade-off, measured
+- [ ] GPU-native Pallas variant: reduction loop inside each program (the Triton decomposition)
 - [ ] vLLM attention-backend integration; benchmark vs TensorRT-LLM / SGLang baselines
 
 ## Project report (PDF)
@@ -492,6 +538,9 @@ as publishable findings, not failures.
   benchmark asserts the timed path matches the validated dispatch path.
 - **Kernel-only timing** — inputs staged on the device once; host padding and PCIe
   excluded from every timed region.
+- **No timing for a wrong answer** — every benchmark row must match the reference
+  before it is timed. On the H100 this stopped a racing Pallas kernel that ran in
+  0.049 ms with 44% of its output wrong from being published.
 - **Memory safety at every layer** — head_dim and page-length limits enforced in the
   CUDA launcher, the C++ bindings and the dispatch layer, with boundary tests.
 

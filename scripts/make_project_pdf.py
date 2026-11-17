@@ -211,7 +211,7 @@ def build():
         ["Date", DATE],
         ["Repository", p(REPO, CELL_M)],
         ["License", "Apache-2.0"],
-        ["Test suite", "76 passing with JAX, 53 without; CI green on 5 jobs"],
+        ["Test suite", "154 passing on an H100 with every backend; CI green on 5 jobs"],
     ], [1.4 * inch, 5.5 * inch], header=False, zebra=False)]
     s += [Spacer(1, 26)]
     s += callout(
@@ -257,10 +257,12 @@ def build():
         ["Fused attention -- agreement with FP32 reference (head_dim 64)",
          p("MAE <b>3.1e-08</b>", CELL)],
         ["Kernel latency, batch 8 x 32 heads x dim 128 x seq 2048",
-         p("<b>2.24 ms</b> median, kernel only (T1000; runs vary 24%)", CELL)],
+         p("<b>0.400 ms</b> on an H100; 2.24 ms median on a T1000", CELL)],
+        ["Llama-2-7B perplexity with INT4 keys (H100)",
+         p("<b>+0.292%</b> at 128-token groups: passes (+0.414% at 256)", CELL)],
         ["Pallas attention error vs a float64 evaluation",
          p("within <b>1.4x</b> of the float32 accumulation floor", CELL)],
-        ["Test suite", p("<b>76 passing</b> with JAX, 53 without; 5/5 CI jobs green", CELL)],
+        ["Test suite", p("<b>154 passing</b> on an H100; 5/5 CI jobs green", CELL)],
     ], [4.0 * inch, 2.9 * inch])]
     s += [Spacer(1, 8)]
     s += callout(
@@ -526,16 +528,18 @@ def build():
         ["Pallas kernels are correct",
          p("<b>Established</b> in interpret mode, on two platforms, in CI", CELL)],
         ["Pallas kernels compile on a real backend",
-         p("<b>Not established.</b> They have never been lowered by Mosaic. "
-           "Interpret mode enforces none of the constraints a real backend imposes.", CELL)],
+         p("<b>On GPU: they compile and race.</b> On an H100, Pallas reaches only "
+           "the Triton backend, which runs grid programs in parallel; both kernels "
+           "returned wrong results. Refused on GPU by design. <b>TPU: untested.</b>", CELL)],
         ["Pallas kernels are fast",
          p("<b>Not established.</b> No compiled Pallas timing exists on any device.", CELL)],
         ["Three-backend performance comparison",
-         p("<b>Not established.</b> Requires one device that runs all three; "
-           "no such device has been used.", CELL)],
+         p("<b>Partly.</b> CUDA vs Triton on one H100: they tie. Pallas has no "
+           "valid compiled timing on any device.", CELL)],
         ["INT4 KV preserves model quality",
-         p("<b>Simulated only.</b> The perplexity gate has not run against real "
-           "model weights.", CELL)],
+         p("<b>Yes, at 128-token scale groups:</b> +0.292% perplexity on Llama-2-7B "
+           "(H100), under the 0.3% target, at 3.56x key compression. 256-token "
+           "groups cost +0.414%. One model and one dataset.", CELL)],
         ["Speedup versus a production kernel",
          p("<b>Not measured.</b> No comparison against FlashAttention or a "
            "serving engine exists; an earlier serial-baseline figure was not "
@@ -552,11 +556,12 @@ def build():
     s += [PageBreak(), p("10", EYEBROW), p("Next steps", H1)]
     s += [table([
         ["Step", "Cost", "What it resolves"],
-        [p("<b>Rented H100 run</b> -- tooling is built and tested: preflight, "
-           "bootstrap, ordered runbook, isolated lowering probe", CELL),
-         "~$5, 1.5 h",
-         "all three backends on identical silicon; real datacenter numbers; "
-         "the first compilation of these kernels; the real perplexity gate"],
+        [p("<b>Rented H100 run</b> -- done", CELL),
+         "~$4",
+         "CUDA and Triton measured on an H100; compiled Pallas shown to race on "
+         "GPU; Llama-2-7B perplexity measured"],
+        [p("<b>Smaller key groups</b> -- done", CELL), "~$0.10",
+         "128 tokens per scale passes the 0.3% target at 3.56x key compression"],
         [p("<b>TPU leg</b> on free Colab or Kaggle", CELL), "free",
          "the three unresolved hypotheses, which an H100 cannot touch because "
          "they are Mosaic TPU properties"],

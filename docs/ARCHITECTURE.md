@@ -107,7 +107,24 @@ per-KV-head indexing.
 | SNR simulation | scripts/validate_llama.py | < 0.5% est. PPL (fallback gate) |
 | Real-model PPL | scripts/validate_llama.py | < 0.3% hard gate (INT4 keys fake-quantized inside attention) |
 
+## Choosing the scale-group size
+
+Measured on Llama-2-7B, WikiText-2 (20,479 tokens), NVIDIA H100
+(`results/perplexity_block_sweep_h100.json`):
+
+| Tokens per scale group | Perplexity increase | Key compression vs FP16 |
+|---|---|---|
+| 256 | +0.414% | 3.76× |
+| **128** | **+0.292%** | **3.56×** |
+| 64 | +0.238% | 3.20× |
+| 32 | +0.179% | 2.67× |
+
+The group is the paged-KV block size, a runtime parameter of every kernel, so
+moving along this curve is configuration, not code. 128 is the largest group
+that meets the 0.3% target, narrowly; 64 buys margin for 0.36× of compression.
+
 ## Fallback path
 
-If real-model perplexity delta exceeds 0.5%: switch to symmetric INT8
-(2× compression instead of 4×) — same kernel structure, wider scales.
+If real-model perplexity at small groups still exceeds 0.5%: switch to
+symmetric INT8 (2× compression instead of ~3.5×) — same kernel structure,
+wider scales. Not needed for Llama-2-7B.

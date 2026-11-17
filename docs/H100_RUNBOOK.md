@@ -135,3 +135,28 @@ If the lowering probe returns REJECTED and you decide to restructure the kernel
 for Mosaic GPU, that is a separate, longer session — do not try to debug it on
 the meter. Capture the error, destroy the instance, fix it locally against
 interpret mode, and rent again.
+
+---
+
+## What happened on the real rental (17 Nov 2026)
+
+Two vast.ai rentals, under $5 in total, to get one complete run. Each trap
+below is now handled by the scripts:
+
+| Trap | Symptom | Now |
+|---|---|---|
+| 24 GB disk with 5 GB free (slider left at default) | PyTorch alone is 5.3 GB | bootstrap refuses in ~1 s |
+| `/dev/shm` is `noexec` in Docker | `failed to map segment from shared object` | documented: environment on disk, model weights may live in RAM |
+| Image's nvcc is CUDA 13; bootstrap pinned a CUDA 12.4 torch | JIT build refuses a major-version mismatch | torch chosen from nvcc's major version |
+| CUDA 13 toolkit missing `cusparse.h` | extension build fails inside PyTorch's headers | `scripts/h100_cuda_env.sh` adds the pip wheels' headers |
+| Template started a **vLLM server holding 73 GB** | JAX out of memory; no room for the model | preflight fails with the fix (`supervisorctl stop vllm`, kill orphans) |
+| `huggingface-cli` gone; token in `/workspace/.hf_home` | login instructions failed | `hf auth login`, browser flow works headless |
+| Compiled Pallas on GPU races | wrong answers, fast | refused by design; the benchmark times nothing unverified |
+
+Results are in `results/*_h100.*`; `results/h100_run_log.txt` has the full run
+(154 tests passed).
+
+Follow-up on the same rental: `scripts/perplexity_block_sweep.py` swept the
+scale-group size (about 10 s of GPU time once the model is loaded). 256-token
+groups cost +0.414%; **128-token groups cost +0.292% and pass the 0.3% gate**
+(`results/perplexity_h100_block128.json`, from `validate_llama.py --block-size 128`).
