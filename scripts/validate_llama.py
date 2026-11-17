@@ -265,6 +265,11 @@ def _load_model(model_name: str, device: str):
     import torch
     from transformers import AutoModelForCausalLM
 
+    if model_name.startswith("meta-llama/Llama-2") and not model_name.endswith("-hf"):
+        raise ValueError(
+            f"{model_name} holds Meta's original checkpoint format, which "
+            f"transformers cannot load; use {model_name}-hf.")
+
     # transformers >= 4.56 takes `dtype`; earlier releases take `torch_dtype`.
     try:
         model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)

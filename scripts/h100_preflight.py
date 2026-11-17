@@ -155,26 +155,54 @@ def _transformers():
         return WARN, f"{type(exc).__name__}: the perplexity step will fail"
 
 
-@check("Hugging Face auth + model access", required=False)
+def _download_permission(model: str):
+    """(ok, detail) for whether this token may DOWNLOAD the model's files.
+
+    model_info() is not enough: for a gated repo it returns metadata to anyone,
+    access granted or not, so checking it reports PASS and the run then fails
+    at download -- on rented time. Verified 2026-11: model_info succeeds while
+    resolving config.json returns 403.
+    """
+    from huggingface_hub import HfApi, hf_hub_download
+    api = HfApi()
+    if hasattr(api, "auth_check"):           # huggingface_hub >= 0.24
+        api.auth_check(model)
+    else:                                    # older: fetch one tiny file
+        hf_hub_download(model, "config.json", force_download=True)
+    return True, f"{model}: download permission confirmed"
+
+
+def _error_chain(exc) -> str:
+    parts, c = [], exc
+    while c is not None and len(parts) < 5:
+        parts.append(str(c))
+        c = c.__cause__ or c.__context__
+    return " | ".join(parts)
+
+
+@check("Hugging Face download permission for the model", required=False)
 def _hf():
     model = os.environ.get("PREFLIGHT_MODEL", "meta-llama/Llama-2-7b-hf")
+    if model.startswith("meta-llama/Llama-2") and not model.endswith("-hf"):
+        return WARN, (
+            f"{model} is Meta's ORIGINAL checkpoint format (consolidated.*.pth),\n"
+            f"          which transformers cannot load. Use {model}-hf instead.")
+    import importlib.util
+    if importlib.util.find_spec("huggingface_hub") is None:
+        return WARN, "huggingface_hub not installed -- the perplexity step will fail"
     try:
-        from huggingface_hub import HfApi
-    except ImportError:
-        return WARN, "huggingface_hub not installed -- perplexity leg will skip"
-    try:
-        HfApi().model_info(model)
-        return OK, f"{model} reachable"
+        ok, detail = _download_permission(model)
+        return OK, detail
     except Exception as exc:
-        msg = str(exc)
-        if "401" in msg or "403" in msg or "gated" in msg.lower():
+        chain = _error_chain(exc)
+        if any(t in chain for t in ("403", "401", "Gated", "gated", "restricted")):
             return WARN, (
-                f"{model} is GATED and you do not have access.\n"
-                f"          Accept the licence at https://huggingface.co/{model}\n"
-                f"          then `huggingface-cli login`. Approval can take hours --\n"
-                f"          do this BEFORE renting. Ungated fallbacks that need no\n"
-                f"          approval: Qwen/Qwen2.5-7B, TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-        return WARN, f"{type(exc).__name__}: {msg[:120]}"
+                f"{model}: NO download permission (403). Access is pending or was\n"
+                f"          never requested. Request it at https://huggingface.co/{model}\n"
+                f"          (one approval covers the whole Llama 2 collection), then\n"
+                f"          `huggingface-cli login`. Do this BEFORE renting. Ungated\n"
+                f"          fallback needing no approval: --model Qwen/Qwen2.5-7B")
+        return WARN, f"{type(exc).__name__}: {chain[:160]}"
 
 
 def main():
