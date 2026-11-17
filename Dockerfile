@@ -4,7 +4,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY pyproject.toml setup.py ./
+COPY pyproject.toml setup.py README.md LICENSE ./
 COPY src/ src/
 COPY tests/ tests/
 COPY benchmarks/ benchmarks/

@@ -2,12 +2,15 @@
 
 CPU-only by default. To build the CUDA extension (requires nvcc + PyTorch):
 
-    FLASH_DECODE_FORCE_CUDA=1 pip install -e .
+    FLASH_DECODE_FORCE_CUDA=1 pip install --no-build-isolation -e .
+
+(--no-build-isolation so the extension compiles against the torch you have
+installed, rather than a fresh copy in an isolated build environment.)
 """
 
 import os
 
-from setuptools import setup, find_packages
+from setuptools import setup
 
 ext_modules = []
 cmdclass = {}
@@ -34,7 +37,7 @@ setup(
     name="flash-decode-int4",
     version="0.1.0",
     description="Flash Decoding with INT4 KV quantization",
-    author="Flash Decode Team",
+    author="Archana Suresh Patil",
     license="Apache-2.0",
     python_requires=">=3.10",
     # src/ IS the package: find_packages(where="src") would look for
@@ -53,7 +56,7 @@ setup(
         ],
         "cuda": ["torch>=2.0.0"],
         "llama": [
-            "transformers>=4.30.0",
+            "transformers>=4.36.0",
             "datasets>=2.0.0",
         ],
     },

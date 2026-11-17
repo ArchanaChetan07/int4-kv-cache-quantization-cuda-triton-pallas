@@ -11,6 +11,7 @@
 #
 # Steps 1-4 are the core deliverable and take ~20 minutes.
 # Step 5 (perplexity) is the long pole and is last on purpose.
+# Compare against results/three_backend_t1000.json: same harness, same sweep.
 
 set -uo pipefail   # NOT -e: a failing step must not abort the ones after it
 
@@ -59,10 +60,6 @@ python benchmarks/bench_three_backend.py \
     --backends reference,cuda,pallas \
     --iters 10 \
     --out results/three_backend_attention_h100.json 2>&1 | tail -60
-
-# ---------------------------------------------------------------------------
-step "Legacy latency benchmark (comparable to the committed T1000 numbers)"
-python benchmarks/bench_flash_decode.py 2>&1 | tail -15
 
 # ---------------------------------------------------------------------------
 step "Real-model perplexity gate -- the long pole"

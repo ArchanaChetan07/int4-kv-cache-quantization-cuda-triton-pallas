@@ -22,6 +22,7 @@ jobs:
         run: |
           pip install numpy pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers   # perplexity-harness tests (tiny offline Llama)
       - name: Run tests (GPU-gated tests skip automatically)
         run: pytest tests/ -v
 

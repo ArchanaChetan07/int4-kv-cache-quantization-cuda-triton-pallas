@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=65.0", "wheel", "torch"]
+requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,9 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "Flash Decode Team", email = "team@example.com"}
+    {name = "Archana Suresh Patil"}
 ]
-keywords = ["cuda", "llm", "serving", "flash-attention", "int4-quantization", "decode"]
+keywords = ["cuda", "triton", "pallas", "jax", "tpu", "llm-inference", "llm-serving",
+            "kv-cache", "int4-quantization", "flash-attention", "flash-decoding"]
 
 dependencies = [
     "torch>=2.0.0",
@@ -36,7 +37,7 @@ pallas = [
     "jax>=0.4.30",
 ]
 llama = [
-    "transformers>=4.30.0",
+    "transformers>=4.36.0",   # Cache.update API used by the perplexity harness
     "datasets>=2.0.0",
 ]
 

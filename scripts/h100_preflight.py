@@ -146,6 +146,15 @@ def _ext():
 # the expensive leg: model weights
 # ---------------------------------------------------------------------------
 
+@check("transformers importable (perplexity step)", required=False)
+def _transformers():
+    try:
+        import transformers
+        return OK, f"transformers {transformers.__version__}"
+    except Exception as exc:
+        return WARN, f"{type(exc).__name__}: the perplexity step will fail"
+
+
 @check("Hugging Face auth + model access", required=False)
 def _hf():
     model = os.environ.get("PREFLIGHT_MODEL", "meta-llama/Llama-2-7b-hf")

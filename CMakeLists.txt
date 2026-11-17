@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(flash_decode_int4 CUDA)
+project(flash_decode_int4 LANGUAGES CXX CUDA)
 
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -10,12 +10,13 @@ if(NOT DEFINED ENV{FLASH_DECODE_FORCE_CUDA})
   return()
 endif()
 
-# CUDA architecture targets: H100, A100, L40S, etc.
-set(CMAKE_CUDA_ARCHITECTURES 80 86 89 90)
+# CUDA architecture targets: T1000/Turing (75), A100 (80), A10/3090 (86),
+# L40S/4090 (89), H100 (90)
+set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
 
 # Find PyTorch
 find_package(Torch REQUIRED)
-find_package(CUDA REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 # Include directories
 include_directories(${TORCH_INCLUDE_DIRS})

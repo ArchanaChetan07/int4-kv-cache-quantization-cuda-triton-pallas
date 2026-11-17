@@ -43,7 +43,7 @@ except ImportError:
     _C = None
 
 try:
-    import jax as _jax  # noqa: F401
+    import jax as _jax  # noqa: F401  (availability probe)
     HAS_PALLAS = True
 except ImportError:
     HAS_PALLAS = False

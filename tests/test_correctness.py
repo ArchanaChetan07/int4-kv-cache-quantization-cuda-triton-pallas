@@ -153,18 +153,13 @@ class TestGateMemoryCompression:
 # Summary report
 def test_summary():
     """Print gate summary for Week 2"""
-    print("""
-    ╔════════════════════════════════════════════════════════════╗
-    ║        Week 2 Correctness Gates - Passing ✓                ║
-    ╠════════════════════════════════════════════════════════════╣
-    ║ Gate 1: FP32 attention numerically correct                 ║
-    ║ Gate 2: INT4 quantization preserves signal                 ║
-    ║ Gate 3: INT4 attention error bounded                       ║
-    ║ Gate 4: Memory compression 4× validated                    ║
-    ╚════════════════════════════════════════════════════════════╝
-
-    Ready for Week 3-5: CUDA kernel implementation
-    """)
+    print(
+        "\n    Week 2 correctness gates - passing\n"
+        "      Gate 1: FP32 attention numerically correct\n"
+        "      Gate 2: INT4 quantization preserves signal\n"
+        "      Gate 3: INT4 attention error bounded\n"
+        "      Gate 4: key-cache compression ~4x validated\n"
+    )
 
 
 if __name__ == '__main__':

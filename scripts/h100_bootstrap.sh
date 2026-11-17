@@ -39,6 +39,8 @@ nvcc --version | tail -2
 say "Python dependencies"
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet numpy pytest matplotlib huggingface_hub
+# perplexity gate (scripts/validate_llama.py)
+python -m pip install --quiet transformers datasets
 
 # torch: only install if absent or CPU-only, so we do not fight a preinstalled
 # provider build that is already correct.

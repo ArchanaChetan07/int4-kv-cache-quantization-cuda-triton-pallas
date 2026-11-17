@@ -20,9 +20,8 @@ Usage (inside a vLLM fork or plugin):
 """
 
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from .quantize_int4_ref import quantize_int4_ref
 from .int4_pack import pack_int4, unpack_int4
 from . import ops
 
