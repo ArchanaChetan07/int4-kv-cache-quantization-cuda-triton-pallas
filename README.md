@@ -9,16 +9,16 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python)]()
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)]()
 
-Per-channel asymmetric **INT4 quantization** of the KV cache fused with a
-**warp-parallel flash-decoding attention kernel** — 4× KV memory compression with
-float-precision-level accuracy, dequantizing in registers so the FP32 key matrix is
-never materialized. Built for paged-KV LLM serving engines like
-[vLLM](https://github.com/vllm-project/vllm); the same techniques underpin
-[TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) and
-[SGLang](https://github.com/sgl-project/sglang) KV-quantization paths, which are the
-comparison baselines planned for the vLLM-integration milestone. The quantizer ships
-in **both CUDA and [Triton](https://github.com/triton-lang/triton)** — the Triton port
-is validated in CI on CPU runners via interpreter mode.
+Per-channel asymmetric **INT4 quantization** of the KV cache's keys, fused with a
+**warp-parallel flash-decoding attention kernel** that dequantizes in registers, so
+the FP32 key matrix is never materialized — a **3.76× smaller key cache** (1.58× for
+the whole KV cache, since values stay FP16). One algorithm, implemented three times —
+**CUDA**, **[Triton](https://github.com/triton-lang/triton)** (quantizer) and
+**[Pallas/JAX](https://docs.jax.dev/en/latest/pallas/)** (quantizer + attention) —
+every implementation validated against a single NumPy oracle. Designed toward
+paged-KV serving engines such as [vLLM](https://github.com/vllm-project/vllm); what
+integration still requires is listed under
+[Scope and limitations](#scope-and-limitations).
 
 ---
 
@@ -48,8 +48,8 @@ All numbers are measured in this repository and reproducible with the commands s
 
 | Check | Result | Hardware |
 |---|---|---|
-| Test suite (GPU mode, `FLASH_DECODE_JIT_CUDA=1`) | **50 passing** (1 Triton-on-Windows skip) | NVIDIA T1000, CUDA 12.5 |
-| Test suite (CPU-only mode) | 48 passing, 3 gated skips | any machine, no GPU needed |
+| Test suite, GPU mode (`FLASH_DECODE_JIT_CUDA=1`) | **121 passing** (4 skips: JAX not installed in that env) | NVIDIA T1000, CUDA 12.5 |
+| Test suite, JAX environment (Pallas interpret mode) | 96 passing | any machine, no GPU needed |
 | Triton quantizer port vs reference | parity via interpreter mode | CI (CPU runners) |
 | Pallas quantizer port vs reference | **0.000% bin disagreement**, scales rtol 1e-4 | CI (CPU, interpret mode) |
 | Pallas attention vs float64 evaluation | within **1.4x of the float32 accumulation floor** on every tested platform | CI (CPU, interpret mode) |
@@ -58,9 +58,10 @@ All numbers are measured in this repository and reproducible with the commands s
 | CUDA quantizer vs NumPy reference | **0.000% bin disagreement**, scales rtol 1e-4 | T1000 |
 | Fused INT4 attention — *agreement* with FP32 reference (head_dim 64) | **MAE 3.1 × 10⁻⁸** | T1000 |
 | Variable-length + empty-block edge cases | MAE ≤ 3.4 × 10⁻⁸ | T1000 |
-| Kernel latency (batch 8 × 32 heads × dim 128 × seq 2048) | **2.84 ms** — 3.9× faster than the initial serial kernel (10.95 ms), memory-bandwidth-bound | T1000 |
-| KV memory compression vs FP16 | **3.98×** (measured, incl. scale/zero-point overhead) | — |
-| KV quantization SNR (per-block scales, Gaussian worst case) | 19.3 dB (+2 dB vs whole-sequence scales) | — |
+| Attention kernel latency (batch 8 × 32 heads × dim 128 × seq 2048), kernel only | **2.24 ms** median of 9 runs (2.13–2.68 ms); 3.05 ms in the committed sweep — clocks unlocked, so runs vary ±24% | T1000 |
+| INT4 quantizer, CUDA vs Triton, same device | CUDA faster at every size: 1.05× to 1.62× | T1000 |
+| Key-cache compression vs FP16 (per-256-token-block scales) | **3.76×** measured from the cache's arrays; **1.58×** for the whole KV | — |
+| KV quantization SNR (per-block scales, Gaussian worst case) | 19.26 dB, **+1.72 dB** vs whole-sequence scales | — |
 
 > **Agreement is not accuracy.** The 3.1 × 10⁻⁸ figure is how closely the CUDA
 > kernel matches the FP32 NumPy reference — not how close either is to the true
@@ -73,17 +74,32 @@ All numbers are measured in this repository and reproducible with the commands s
 < 0.3% perplexity gate runs against real Llama weights (`scripts/validate_llama.py`,
 needs a ≥16 GB GPU). **Throughput target:** 2.1–2.8× vs dense FP16 decode.
 
+Every number above is reproducible from committed code: latency and the
+CUDA-vs-Triton comparison from `benchmarks/bench_three_backend.py`
+(`results/three_backend_t1000.json`), compression from `INT4PagedKVCache`'s arrays,
+SNR from `scripts/validate_llama.py --simulate`, and every chart from
+`scripts/make_pallas_charts.py`. Timings cover the kernel only, on device-resident
+inputs — host-side padding and PCIe copies are excluded (they were 26% of the
+end-to-end call even on this card).
+
 <p align="center">
-  <img src="docs/assets/kernel_speedup.png" alt="3.9x kernel speedup: serial vs warp-parallel" width="620">
+  <img src="docs/assets/t1000_quantizer_cuda_vs_triton.png" alt="INT4 quantizer, CUDA vs Triton on the same T1000" width="700">
 </p>
 
 <p align="center">
-  <img src="docs/assets/memory_compression.png" alt="3.98x KV memory compression vs FP16" width="620">
+  <img src="docs/assets/memory_compression.png" alt="3.76x smaller key cache; 1.58x for the whole KV cache" width="700">
 </p>
 
 <p align="center">
-  <img src="docs/assets/snr_per_block.png" alt="Per-block scales gain +2 dB quantization SNR" width="620">
+  <img src="docs/assets/snr_per_block.png" alt="Per-block scales gain 1.72 dB quantization SNR" width="560">
 </p>
+
+**The attention kernel is latency-bound, not bandwidth-bound.** All 256 (batch, head)
+programs read one shared page stream, and at the anchor shape the kernel uses
+**0.3–0.4% of DRAM bandwidth** on unique bytes. Its streamed read throughput even
+exceeds the 160 GB/s DRAM peak at short sequences (213 GB/s at s512) — L2 serving the
+shared stream. The cost is the per-position warp-shuffle reduction and serial
+softmax update, which makes tiling several positions per warp the next optimization.
 
 ---
 
@@ -205,7 +221,7 @@ q        = clip(round((k − min[c]) / scale[c]), 0, 15)
 - **Keys only:** logits pass through softmax (bounded sensitivity); values contribute
   linearly to the output and stay FP16/FP32.
 - **Per-page scales:** a 256-token page has far tighter min/max than a full sequence —
-  measured +2 dB SNR over whole-sequence scales.
+  measured +1.72 dB SNR over whole-sequence scales.
 - **Asymmetric:** captures the full [min, max] range in 4 bits; symmetric INT8 is the
   documented fallback if real-model perplexity regresses > 0.5%.
 - **Nibble-packed storage (implemented):** the paged cache stores keys at
@@ -282,7 +298,7 @@ materialized — dequantization happens in registers during the dot product.
 git clone https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas.git
 cd int4-kv-cache-quantization-cuda-triton-pallas
 pip install -e .
-pytest tests/ -q                     # 40 passed, 2 skipped
+pytest tests/ -q                     # GPU-, JAX- and transformers-gated tests skip
 python benchmarks/bench_flash_decode.py
 python scripts/validate_llama.py --simulate   # hardware-free SNR gate
 ```
@@ -317,10 +333,12 @@ PowerShell or cmd (nvcc's host-compiler subprocess fails under Git Bash/MSYS):
 
 ```powershell
 $env:FLASH_DECODE_JIT_CUDA = "1"
-pytest tests/ -q                     # 42 passed, 0 skipped — CUDA parity active
+pytest tests/ -q                     # 121 passed on a T1000 — CUDA + Triton active
 ```
 
-Or build the extension permanently: `FLASH_DECODE_FORCE_CUDA=1 pip install -e .`
+Or build the extension permanently:
+`FLASH_DECODE_FORCE_CUDA=1 pip install --no-build-isolation -e .`
+(`--no-build-isolation` so it compiles against your installed torch).
 
 ### Usage
 
@@ -375,13 +393,40 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 | Multi-block ≡ concatenated attention | `test_flash_decode.py` | MAE < 1e-5 | ✅ |
 | CUDA ⇄ reference parity | `test_ops_dispatch.py` | MAE < 1e-3 | ✅ (3e-08) |
 | Scaled-query attention drift | `test_vllm_integration.py` | MAE < 0.05 | ✅ |
+| One input contract, every backend | `test_ops_dispatch.py` | malformed pages / lengths raise identically | ✅ |
+| CUDA kernel shape boundaries | `test_ops_dispatch.py` | head_dim 1–256, ragged pages | ✅ |
+| Perplexity harness measures INT4 keys | `test_perplexity_harness.py` | hook fires; loss changes | ✅ |
 | SNR simulation (worst case) | `validate_llama.py --simulate` | < 0.5% est. PPL | ✅ |
 | Real-model perplexity | `validate_llama.py` | < 0.3% PPL delta | pending (needs ≥16 GB GPU) |
+
+## Scope and limitations
+
+Stated plainly, so a reviewer does not have to discover them:
+
+- **Shared page stream.** The CUDA and Pallas attention kernels attend every query in
+  the `[batch, heads]` grid over **one** sequence's KV pages — MQA-style, or many
+  queries against one shared prefix. A vLLM attention backend additionally needs a
+  per-sequence block table and per-KV-head indexing; that is the integration
+  milestone, not done.
+- **Latency-bound kernel.** See above: 0.3–0.4% DRAM utilization at the anchor shape.
+  The earlier claim that it ran near the bandwidth roofline was wrong.
+- **Perplexity is measured by fake quantization.** `validate_llama.py` quantizes
+  post-RoPE keys inside PyTorch attention, which measures the accuracy cost of the
+  INT4 scheme; the kernels' agreement with that scheme is established separately by
+  the parity tests.
+- **Pallas has never been compiled.** All Pallas results are interpret mode; the
+  lowering probe (`scripts/pallas_lowering_probe.py`) needs TPU or Hopper hardware.
+- **T1000 timings vary ±24%.** Boost clocks cannot be locked without admin rights, so
+  report medians and ranges, not single runs.
+- **The serial v1 kernel is not in this repository.** An early serial version timed at
+  10.95 ms predates the history; that comparison is not reproducible and is no
+  longer cited.
 
 ## Roadmap
 
 - [x] NumPy reference: quantizer + online softmax
-- [x] CUDA kernels — parity at MAE 3e-08, 3.9× kernel speedup to bandwidth roofline
+- [x] CUDA kernels — agreement with the reference at MAE 3e-08; 2.24 ms at the anchor shape on a T1000
+- [ ] Tile several positions per warp — the kernel is latency-bound (0.3–0.4% DRAM utilization)
 - [x] Triton port of the quantizer (CI-validated via interpreter mode)
 - [x] Pallas/JAX port of the quantizer **and** the fused attention kernel
       (CI-validated via `interpret=True`) — see [docs/TRITON_TO_PALLAS.md](docs/TRITON_TO_PALLAS.md)
@@ -441,6 +486,14 @@ as publishable findings, not failures.
   10 confirmed, **1 refuted**, 3 unresolved pending TPU access.
 - **CI without accelerators** — Triton validated via `TRITON_INTERPRET=1`, Pallas via
   `pallas_call(interpret=True)`; 5/5 jobs green on CPU-only runners.
+- **Measurements that prove they measured something** — the perplexity harness raises
+  unless its INT4 hook fired and changed the keys (an earlier version quantized the
+  cache *after* the loss was computed and reported 0.000% by construction); the
+  benchmark asserts the timed path matches the validated dispatch path.
+- **Kernel-only timing** — inputs staged on the device once; host padding and PCIe
+  excluded from every timed region.
+- **Memory safety at every layer** — head_dim and page-length limits enforced in the
+  CUDA launcher, the C++ bindings and the dispatch layer, with boundary tests.
 
 ## Related Projects
 

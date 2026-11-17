@@ -11,9 +11,14 @@ instance — the failures it prevents are the ones that cost money.
 | Deliverable | Status today | After this run |
 |---|---|---|
 | **D14** — three backends on identical silicon | never satisfiable (no shared device) | ✅ the project's original goal |
-| Performance numbers | T1000 only, 160 GB/s | ✅ H100, ~3.35 TB/s HBM3 — MBU becomes meaningful |
+| Performance numbers | T1000 only (`results/three_backend_t1000.json`) | ✅ H100, same harness and sweep — directly comparable |
 | Pallas compiled by a real backend | never — interpret mode only | ✅ or a documented rejection, which is also a result |
 | Perplexity gate | simulated | ✅ real weights |
+
+**What the perplexity step measures:** INT4 keys fake-quantized *inside*
+attention (a `Cache.update` hook, post-RoPE). The JSON carries `hook_calls`,
+`expected_hook_calls` and `max_abs_key_change`; check them before quoting the
+delta. A real Llama may well miss the 0.3% gate -- that is a result, report it.
 
 **What it does *not* produce:** the three UNRESOLVED hypotheses in
 [TRITON_TO_PALLAS.md](TRITON_TO_PALLAS.md) — missing `int4` dtype, nibble-packing
@@ -71,11 +76,19 @@ H100 and not notice.
 | 2 | Pallas lowering probe | 2 min | Highest uncertainty — find out early |
 | 3 | Quantizer benchmark (4 backends) | 5 min | The op that genuinely has three implementations |
 | 4 | Attention benchmark, full sweep | 10 min | The headline numbers |
-| 5 | Legacy latency bench | 2 min | Directly comparable to the committed T1000 figures |
-| 6 | Perplexity gate | 20–40 min | Long pole, and the most likely to fail on auth |
+| 5 | Perplexity gate | 20–40 min | Long pole, and the most likely to fail on auth |
 
-Steps 1–5 are ~20 minutes. If you are watching the meter, you have the core
-deliverable before step 6 even starts.
+Steps 1–4 are ~20 minutes. If you are watching the meter, you have the core
+deliverable before step 5 even starts.
+
+### Reading the bandwidth columns
+
+`mbu_unique_percent` is the only figure the harness calls a utilization. On the
+T1000 it is 0.3–0.4% at the anchor shape: the attention kernel is latency-bound,
+because every (batch, head) program reads one shared page stream that L2 serves.
+`streamed_read_gbps` is a throughput, and is flagged when it exceeds the DRAM
+peak. Expect the same shape on the H100, with every number larger -- do not
+report streamed throughput as a utilization.
 
 ---
 

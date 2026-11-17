@@ -41,7 +41,7 @@ dequant  = q * scale[c] - zp[c] * scale[c]   # == q*scale + min
 - **Why keys only:** logits pass through softmax (bounded sensitivity);
   values contribute linearly to the output and are more error-sensitive.
 - **Why per-block scales:** a 256-token block has far tighter min/max
-  than a 2048-token sequence → ~2 dB better SNR (measured by
+  than a 2048-token sequence → +1.72 dB SNR (measured by
   `scripts/validate_llama.py --simulate`).
 - **Storage:** production packs two INT4 values per byte; the reference
   keeps one per byte for clarity. `memory_stats()` reports packed size.
@@ -80,9 +80,21 @@ warps merge at the end with a log-sum-exp combine. Dequantization happens
 in registers during the dot product — the FP32 key matrix is never
 materialized.
 
-Measured on NVIDIA T1000 (batch 8 × 32 heads × dim 128 × seq 2048):
-2.84 ms — 3.9× faster than the initial serial implementation (10.95 ms),
-near the card's memory-bandwidth roofline for this access pattern.
+Measured on NVIDIA T1000 (batch 8 × 32 heads × dim 128 × seq 2048), kernel
+only, device-resident inputs: 2.24 ms median over 9 runs (2.13–2.68 ms; clocks
+unlocked). Reproduce with `benchmarks/bench_three_backend.py`.
+
+The kernel is **latency-bound**, not bandwidth-bound: every (batch, head)
+program streams the same page sequence, unique-byte DRAM utilization is
+0.3–0.4%, and streamed read throughput exceeds DRAM peak at short sequences
+because L2 serves the shared stream. The per-position warp-shuffle reduction
+and serial softmax update dominate; tiling several positions per warp is the
+next optimization. (An earlier version of this document claimed the kernel ran
+near the bandwidth roofline. The measurement above refutes that.)
+
+Scope: all queries in the [batch, heads] grid attend over one page stream
+(MQA-style). A vLLM backend additionally needs a per-sequence block table and
+per-KV-head indexing.
 
 ## Validation gates
 
@@ -93,7 +105,7 @@ near the card's memory-bandwidth roofline for this access pattern.
 | INT4 vs FP32 attention | test_correctness.py | MAE < 0.15 (Gaussian worst case) |
 | Scaled-query drift | test_vllm_integration.py | MAE < 0.05 |
 | SNR simulation | scripts/validate_llama.py | < 0.5% est. PPL (fallback gate) |
-| Real-model PPL (Week 11) | scripts/validate_llama.py | < 0.3% hard gate |
+| Real-model PPL | scripts/validate_llama.py | < 0.3% hard gate (INT4 keys fake-quantized inside attention) |
 
 ## Fallback path
 

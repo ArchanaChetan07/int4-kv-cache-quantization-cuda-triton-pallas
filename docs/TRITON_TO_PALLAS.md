@@ -48,7 +48,7 @@ TPU access and are the honest limit of what this port established.
 | Pallas quantizer vs NumPy oracle | **0.000% bin disagreement**, scales `rtol 1e-4` |
 | Pallas attention, empty/ragged pages | correct, no NaN, exact zeros for an all-empty sequence |
 | Pallas test suite | **21 passing** (8 quantizer, 13 attention) |
-| Existing suite, unaffected | 48 passing in the base environment |
+| Full suite after the audit | 121 passing on a T1000 (GPU mode); 96 in the JAX environment |
 | Pallas attention MAE vs float64 truth, `head_dim=128` | **2.59e-07** |
 | NumPy oracle MAE vs the same float64 truth | 9.26e-07 |
 | Both, expressed against the float32 accumulation floor | 0.32x - 1.39x across platforms (see 5.1) |
@@ -307,6 +307,21 @@ without TPU or rented Hopper access. That was predicted from documentation in
 the proposal; it is now confirmed by execution.
 
 ---
+
+### 5.6 A premise of the proposal turned out false
+
+The proposal's benchmark section rested on the base kernel being
+memory-bandwidth-bound, which made bandwidth utilization the natural
+cross-device metric. Measuring it properly -- kernel only, device-resident
+inputs -- refutes the premise. Unique-byte DRAM utilization at the anchor
+shape is 0.3-0.4% on the T1000, and streamed read throughput exceeds the DRAM
+peak at short sequences (213 GB/s against 160 GB/s at s512), which is only
+possible because L2 serves the page stream every (batch, head) program shares.
+
+The kernel is latency-bound. The benchmark now reports unique-byte utilization
+as the only quantity it calls a utilization, and streamed throughput in GB/s,
+flagged whenever it exceeds peak. The proposal is left as written: it was
+pre-registered, and editing it after the fact would defeat the point.
 
 ## 6. Would I tell someone to make this transition?
 

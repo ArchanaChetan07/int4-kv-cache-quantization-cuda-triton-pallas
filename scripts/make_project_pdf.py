@@ -252,12 +252,12 @@ def build():
         ["Measured outcome", "Result"],
         ["Quantizer vs NumPy oracle (CUDA and Pallas)",
          p("<b>0.000% bin disagreement</b>", CELL)],
-        ["KV memory compression vs FP16, incl. scale/zero-point overhead",
-         p("<b>3.98x</b> measured", CELL)],
+        ["Key-cache compression vs FP16, per-256-token-block scales",
+         p("<b>3.76x</b> keys; 1.58x whole KV (values stay FP16)", CELL)],
         ["Fused attention -- agreement with FP32 reference (head_dim 64)",
          p("MAE <b>3.1e-08</b>", CELL)],
         ["Kernel latency, batch 8 x 32 heads x dim 128 x seq 2048",
-         p("<b>2.84 ms</b>, 3.9x over a serial baseline (T1000)", CELL)],
+         p("<b>2.24 ms</b> median, kernel only (T1000; runs vary 24%)", CELL)],
         ["Pallas attention error vs a float64 evaluation",
          p("within <b>1.4x</b> of the float32 accumulation floor", CELL)],
         ["Test suite", p("<b>76 passing</b> with JAX, 53 without; 5/5 CI jobs green", CELL)],
@@ -468,7 +468,8 @@ def build():
         ["Milliseconds compared only within one device",
          "two chips with different memory systems are not comparable in absolute time"],
         ["Memory-bandwidth utilization is the cross-device metric",
-         "the kernel is bandwidth-bound, so MBU is what transfers between machines; "
+         "utilization against spec-sheet peak transfers between machines; only "
+         "unique-byte MBU is called a utilization (the kernel is latency-bound); "
          "where a device's peak bandwidth is not known, MBU is reported as null "
          "rather than guessed"],
         ["Milliseconds compared only within one execution mode",
@@ -536,8 +537,9 @@ def build():
          p("<b>Simulated only.</b> The perplexity gate has not run against real "
            "model weights.", CELL)],
         ["Speedup versus a production kernel",
-         p("<b>Not measured.</b> The 3.9x figure is against a serial baseline in "
-           "this repository, not against FlashAttention or a serving engine.", CELL)],
+         p("<b>Not measured.</b> No comparison against FlashAttention or a "
+           "serving engine exists; an earlier serial-baseline figure was not "
+           "reproducible from this repository and is no longer cited.", CELL)],
         ["TPU-specific behaviour (int4 dtype, packing axis, reduction direction)",
          p("<b>Unresolved.</b> Three pre-registered hypotheses require TPU silicon.", CELL)],
     ], [2.6 * inch, 4.3 * inch])]
