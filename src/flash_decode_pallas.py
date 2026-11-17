@@ -38,6 +38,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from ._prepared import PreparedCall
 from ._validate import normalize_attention_inputs
 
 try:
@@ -183,6 +184,105 @@ if HAS_JAX:
             o_ref[...] = o_ref[...] / denom[..., None]
 
 
+def prepare_flash_decode_pallas(
+    query: np.ndarray,
+    k_q_blocks: List[np.ndarray],
+    k_scales: List[np.ndarray],
+    k_zps: List[np.ndarray],
+    v_blocks: List[np.ndarray],
+    block_lens: Optional[np.ndarray] = None,
+    interpret: bool = False,
+    use_dot: bool = False,
+) -> PreparedCall:
+    """Validate, pad and stage inputs on the device once.
+
+    The returned call's run() launches only the jitted pallas_call on
+    device-resident arrays -- the thing a benchmark should time.
+    flash_decode_pallas() is this plus a copy back to host, so the timed path
+    and the tested path are the same code.
+    """
+    if not HAS_JAX:
+        raise RuntimeError("jax is not installed")
+
+    # Same validation as every other backend: shapes consistent, and each
+    # block length inside [0, rows in that page].
+    query, block_lens = normalize_attention_inputs(
+        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
+    query = query.astype(np.float32)
+
+    batch, heads, head_dim = query.shape
+    n_blocks = len(k_q_blocks)
+    if n_blocks == 0:
+        # An empty cache is the all-pages-empty case: exact zeros, as in the
+        # reference and the CUDA kernel.
+        zeros = np.zeros(query.shape, dtype=np.float32)
+        return PreparedCall(run=lambda: zeros)
+
+    block_size = max(int(b.shape[0]) for b in k_q_blocks)
+
+    # Pad ragged pages into the dense [num_blocks, block_size, head_dim] layout
+    # the CUDA path also uses. Real paged serving hands the kernel this layout
+    # directly; the padding here exists only because the test fixtures build
+    # Python lists.
+    k_arr = np.zeros((n_blocks, block_size, head_dim), dtype=np.uint8)
+    v_arr = np.zeros((n_blocks, block_size, head_dim), dtype=np.float32)
+    s_arr = np.zeros((n_blocks, head_dim), dtype=np.float32)
+    z_arr = np.zeros((n_blocks, head_dim), dtype=np.float32)
+    for i in range(n_blocks):
+        n = k_q_blocks[i].shape[0]
+        k_arr[i, :n] = k_q_blocks[i]
+        v_arr[i, :n] = v_blocks[i]
+        s_arr[i] = k_scales[i]
+        z_arr[i] = k_zps[i]
+
+    # Grid-order semantics must be declared explicitly for any compiled
+    # backend; see _compiler_params. Omitted in interpret mode, which executes
+    # the grid sequentially by construction.
+    platform = "" if interpret else jax.devices()[0].platform
+    cparams = None if interpret else _compiler_params(platform)
+    extra = {"compiler_params": cparams} if cparams is not None else {}
+
+    call = pl.pallas_call(
+        lambda *refs: _flash_decode_kernel(
+            *refs, n_blocks=n_blocks, use_dot=use_dot
+        ),
+        grid=(batch, heads, n_blocks),
+        **extra,
+        in_specs=[
+            pl.BlockSpec((1, 1, head_dim), lambda b, h, i: (b, h, 0)),      # query
+            pl.BlockSpec((1, block_size, head_dim), lambda b, h, i: (i, 0, 0)),  # k_q
+            pl.BlockSpec((1, head_dim), lambda b, h, i: (i, 0)),            # scale
+            pl.BlockSpec((1, head_dim), lambda b, h, i: (i, 0)),            # zp
+            pl.BlockSpec((1, block_size, head_dim), lambda b, h, i: (i, 0, 0)),  # value
+            pl.BlockSpec((1,), lambda b, h, i: (i,)),                       # block_lens
+        ],
+        # The block axis is absent from every output index_map: that is what
+        # makes these accumulators rather than per-step writes.
+        out_specs=[
+            pl.BlockSpec((1, 1, head_dim), lambda b, h, i: (b, h, 0)),
+            pl.BlockSpec((1, 1, 1), lambda b, h, i: (b, h, 0)),
+            pl.BlockSpec((1, 1, 1), lambda b, h, i: (b, h, 0)),
+        ],
+        out_shape=[
+            jax.ShapeDtypeStruct((batch, heads, head_dim), jnp.float32),
+            jax.ShapeDtypeStruct((batch, heads, 1), jnp.float32),
+            jax.ShapeDtypeStruct((batch, heads, 1), jnp.float32),
+        ],
+        interpret=interpret,
+    )
+
+    fn = jax.jit(lambda *a: call(*a)[0])
+    args = tuple(jax.device_put(x) for x in
+                 (query, k_arr, s_arr, z_arr, v_arr, block_lens))
+
+    return PreparedCall(
+        run=lambda: fn(*args),
+        sync=lambda out: out.block_until_ready(),
+        to_numpy=np.asarray,
+        lowered_text=lambda: fn.lower(*args).compile().as_text(),
+    )
+
+
 def flash_decode_pallas(
     query: np.ndarray,
     k_q_blocks: List[np.ndarray],
@@ -211,80 +311,6 @@ def flash_decode_pallas(
     Returns:
         [batch, heads, head_dim] float32 attention output.
     """
-    if not HAS_JAX:
-        raise RuntimeError("jax is not installed")
-
-    # Same validation as every other backend: shapes consistent, and each
-    # block length inside [0, rows in that page].
-    query, block_lens = normalize_attention_inputs(
-        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
-    query = query.astype(np.float32)
-
-    batch, heads, head_dim = query.shape
-    n_blocks = len(k_q_blocks)
-    if n_blocks == 0:
-        # An empty cache is the all-pages-empty case: exact zeros, as in the
-        # reference and the CUDA kernel.
-        return np.zeros(query.shape, dtype=np.float32)
-
-    block_size = max(int(b.shape[0]) for b in k_q_blocks)
-
-    # Pad ragged pages into the dense [num_blocks, block_size, head_dim] layout
-    # the CUDA path also uses. Real paged serving hands the kernel this layout
-    # directly; the padding here exists only because the test fixtures build
-    # Python lists.
-    k_arr = np.zeros((n_blocks, block_size, head_dim), dtype=np.uint8)
-    v_arr = np.zeros((n_blocks, block_size, head_dim), dtype=np.float32)
-    s_arr = np.zeros((n_blocks, head_dim), dtype=np.float32)
-    z_arr = np.zeros((n_blocks, head_dim), dtype=np.float32)
-    for i in range(n_blocks):
-        n = k_q_blocks[i].shape[0]
-        k_arr[i, :n] = k_q_blocks[i]
-        v_arr[i, :n] = v_blocks[i]
-        s_arr[i] = k_scales[i]
-        z_arr[i] = k_zps[i]
-
-    # Grid-order semantics must be declared explicitly for any compiled
-    # backend; see _compiler_params. Omitted in interpret mode, which executes
-    # the grid sequentially by construction.
-    platform = "" if interpret else jax.devices()[0].platform
-    cparams = None if interpret else _compiler_params(platform)
-    extra = {"compiler_params": cparams} if cparams is not None else {}
-
-    out = pl.pallas_call(
-        lambda *refs: _flash_decode_kernel(
-            *refs, n_blocks=n_blocks, use_dot=use_dot
-        ),
-        grid=(batch, heads, n_blocks),
-        **extra,
-        in_specs=[
-            pl.BlockSpec((1, 1, head_dim), lambda b, h, i: (b, h, 0)),      # query
-            pl.BlockSpec((1, block_size, head_dim), lambda b, h, i: (i, 0, 0)),  # k_q
-            pl.BlockSpec((1, head_dim), lambda b, h, i: (i, 0)),            # scale
-            pl.BlockSpec((1, head_dim), lambda b, h, i: (i, 0)),            # zp
-            pl.BlockSpec((1, block_size, head_dim), lambda b, h, i: (i, 0, 0)),  # value
-            pl.BlockSpec((1,), lambda b, h, i: (i,)),                       # block_lens
-        ],
-        # The block axis is absent from every output index_map: that is what
-        # makes these accumulators rather than per-step writes.
-        out_specs=[
-            pl.BlockSpec((1, 1, head_dim), lambda b, h, i: (b, h, 0)),
-            pl.BlockSpec((1, 1, 1), lambda b, h, i: (b, h, 0)),
-            pl.BlockSpec((1, 1, 1), lambda b, h, i: (b, h, 0)),
-        ],
-        out_shape=[
-            jax.ShapeDtypeStruct((batch, heads, head_dim), jnp.float32),
-            jax.ShapeDtypeStruct((batch, heads, 1), jnp.float32),
-            jax.ShapeDtypeStruct((batch, heads, 1), jnp.float32),
-        ],
-        interpret=interpret,
-    )(
-        jnp.asarray(query),
-        jnp.asarray(k_arr),
-        jnp.asarray(s_arr),
-        jnp.asarray(z_arr),
-        jnp.asarray(v_arr),
-        jnp.asarray(block_lens),
-    )
-
-    return np.asarray(out[0])
+    return prepare_flash_decode_pallas(
+        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens,
+        interpret=interpret, use_dot=use_dot)()

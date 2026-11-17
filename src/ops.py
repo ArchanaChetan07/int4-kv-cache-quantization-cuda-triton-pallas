@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 
 from .quantize_int4_ref import quantize_int4_ref
 from .flash_decode_ref import online_softmax_ref
+from ._prepared import PreparedCall
 from ._validate import normalize_attention_inputs
 
 try:
@@ -141,9 +142,7 @@ def quantize_int4(
                 f"shape {kv.shape}. Use backend='reference' for higher-rank input."
             )
         if kv.ndim == 2 and HAS_CUDA:
-            kv_t = torch.from_numpy(kv.astype(np.float32)).cuda()
-            q, scale, zp = _C.quantize_int4(kv_t)
-            return q.cpu().numpy(), scale.cpu().numpy(), zp.cpu().numpy()
+            return prepare_quantize_int4_cuda(kv)()
         # backend == "cuda" with a bad shape or missing extension already raised
         # above; reaching here means auto-detect chose CUDA but the input is not
         # 2D, which legitimately falls back to the reference.
@@ -236,33 +235,71 @@ def flash_decode(
         use_kernel = False   # auto-detect: fall back rather than overflow
 
     if use_kernel:
-        block_size = max(b.shape[0] for b in k_q_blocks)
-
-        # Pad pages to a uniform size for the kernel's dense layout
-        k_q_arr = np.zeros((num_blocks, block_size, head_dim), dtype=np.uint8)
-        v_arr = np.zeros((num_blocks, block_size, head_dim), dtype=np.float32)
-        scale_arr = np.zeros((num_blocks, head_dim), dtype=np.float32)
-        zp_arr = np.zeros((num_blocks, head_dim), dtype=np.float32)
-
-        for i in range(num_blocks):
-            n = k_q_blocks[i].shape[0]
-            k_q_arr[i, :n] = k_q_blocks[i]
-            v_arr[i, :n] = v_blocks[i]
-            scale_arr[i] = k_scales[i]
-            zp_arr[i] = k_zps[i]
-
-        out = _C.flash_decode_int4(
-            torch.from_numpy(query.astype(np.float32)).cuda(),
-            torch.from_numpy(k_q_arr).cuda(),
-            torch.from_numpy(scale_arr).cuda(),
-            torch.from_numpy(zp_arr).cuda(),
-            torch.from_numpy(v_arr).cuda(),
-            torch.from_numpy(block_lens).cuda(),
-        )
-        return out.cpu().numpy()
+        return prepare_flash_decode_cuda(
+            query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)()
 
     return _reference_attention(
         query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
+
+
+def _cuda_sync(_out) -> None:
+    torch.cuda.synchronize()
+
+
+def prepare_quantize_int4_cuda(kv: np.ndarray) -> PreparedCall:
+    """Stage `kv` on the GPU once; run() is one kernel launch."""
+    if not HAS_CUDA:
+        raise RuntimeError("CUDA extension not built")
+    kv_t = torch.from_numpy(np.ascontiguousarray(kv, dtype=np.float32)).cuda()
+    return PreparedCall(
+        run=lambda: _C.quantize_int4(kv_t),
+        sync=_cuda_sync,
+        to_numpy=lambda out: tuple(t.cpu().numpy() for t in out),
+    )
+
+
+def prepare_flash_decode_cuda(query, k_q_blocks, k_scales, k_zps, v_blocks,
+                              block_lens=None) -> PreparedCall:
+    """Validate, pad and stage inputs on the GPU once; run() is one launch.
+
+    flash_decode(backend="cuda") is this plus a copy back to host, so the timed
+    path and the tested path are the same code.
+    """
+    if not HAS_CUDA:
+        raise RuntimeError("CUDA extension not built")
+    query, block_lens = normalize_attention_inputs(
+        query, k_q_blocks, k_scales, k_zps, v_blocks, block_lens)
+    num_blocks = len(k_q_blocks)
+    head_dim = query.shape[2]
+    if num_blocks == 0:
+        zeros = np.zeros(query.shape, dtype=np.float32)
+        return PreparedCall(run=lambda: zeros)
+    if head_dim > CUDA_MAX_HEAD_DIM:
+        raise ValueError(
+            f"the CUDA attention kernel supports head_dim <= {CUDA_MAX_HEAD_DIM}, "
+            f"got {head_dim}")
+
+    block_size = max(b.shape[0] for b in k_q_blocks)
+
+    # Pad pages to a uniform size for the kernel's dense layout
+    k_q_arr = np.zeros((num_blocks, block_size, head_dim), dtype=np.uint8)
+    v_arr = np.zeros((num_blocks, block_size, head_dim), dtype=np.float32)
+    scale_arr = np.zeros((num_blocks, head_dim), dtype=np.float32)
+    zp_arr = np.zeros((num_blocks, head_dim), dtype=np.float32)
+    for i in range(num_blocks):
+        n = k_q_blocks[i].shape[0]
+        k_q_arr[i, :n] = k_q_blocks[i]
+        v_arr[i, :n] = v_blocks[i]
+        scale_arr[i] = k_scales[i]
+        zp_arr[i] = k_zps[i]
+
+    dev = [torch.from_numpy(np.ascontiguousarray(a)).cuda() for a in
+           (query.astype(np.float32), k_q_arr, scale_arr, zp_arr, v_arr, block_lens)]
+    return PreparedCall(
+        run=lambda: _C.flash_decode_int4(*dev),
+        sync=_cuda_sync,
+        to_numpy=lambda out: out.cpu().numpy(),
+    )
 
 
 def backend_status() -> dict:

@@ -37,6 +37,8 @@ from typing import Tuple
 
 import numpy as np
 
+from ._prepared import PreparedCall
+
 try:
     import jax
     import jax.numpy as jnp
@@ -123,6 +125,82 @@ if HAS_JAX:
         q_ref[...] = qi.astype(jnp.uint8)
 
 
+def prepare_quantize_int4_pallas(
+    kv,
+    block_rows: int = DEFAULT_BLOCK_ROWS,
+    interpret: bool = False,
+) -> PreparedCall:
+    """Validate and stage `kv` on the device once; see quantize_int4_pallas.
+
+    The returned call's run() launches both passes as one jitted function on
+    the device-resident input -- what a benchmark should time.
+    """
+    if not HAS_JAX:
+        raise RuntimeError("jax is not installed")
+
+    kv_np = np.ascontiguousarray(np.asarray(kv), dtype=np.float32)
+    if kv_np.ndim != 2:
+        raise ValueError(f"expected [num_rows, num_channels], got {kv_np.shape}")
+
+    n_rows, n_ch = kv_np.shape
+    if n_rows == 0 or n_ch == 0:
+        raise ValueError(
+            f"cannot quantize an empty array (shape {kv_np.shape}): per-channel "
+            f"min/max over zero rows is undefined"
+        )
+    if block_rows < 1:
+        raise ValueError(f"block_rows must be >= 1, got {block_rows}")
+
+    block_r = min(block_rows, n_rows)
+    n_grid = (n_rows + block_r - 1) // block_r
+    stat_shape = jax.ShapeDtypeStruct((1, n_ch), jnp.float32)
+
+    stats_call = pl.pallas_call(
+        lambda kv_ref, mn_ref, mx_ref, s_ref, z_ref: _minmax_kernel(
+            kv_ref, mn_ref, mx_ref, s_ref, z_ref, n_rows=n_rows, n_grid=n_grid
+        ),
+        grid=(n_grid,),
+        in_specs=[pl.BlockSpec((block_r, n_ch), lambda i: (i, 0))],
+        # Every grid step maps to block (0, 0): Pallas keeps it resident, so
+        # these behave as accumulators across the sequential grid.
+        out_specs=[pl.BlockSpec((1, n_ch), lambda i: (0, 0))] * 4,
+        out_shape=[stat_shape] * 4,
+        interpret=interpret,
+    )
+    quant_call = pl.pallas_call(
+        _quantize_kernel,
+        grid=(n_grid,),
+        in_specs=[
+            pl.BlockSpec((block_r, n_ch), lambda i: (i, 0)),
+            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
+            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
+        ],
+        out_specs=pl.BlockSpec((block_r, n_ch), lambda i: (i, 0)),
+        out_shape=jax.ShapeDtypeStruct((n_rows, n_ch), jnp.uint8),
+        interpret=interpret,
+    )
+
+    def both_passes(x):
+        mn, _mx, scale, zp = stats_call(x)
+        return quant_call(x, mn, scale), scale, zp
+
+    fn = jax.jit(both_passes)
+    kv_dev = jax.device_put(kv_np)
+
+    def sync(out):
+        for o in out:
+            o.block_until_ready()
+
+    return PreparedCall(
+        run=lambda: fn(kv_dev),
+        sync=sync,
+        to_numpy=lambda out: (np.asarray(out[0]),
+                              np.asarray(out[1]).reshape(n_ch),
+                              np.asarray(out[2]).reshape(n_ch)),
+        lowered_text=lambda: fn.lower(kv_dev).compile().as_text(),
+    )
+
+
 def quantize_int4_pallas(
     kv,
     block_rows: int = DEFAULT_BLOCK_ROWS,
@@ -143,65 +221,7 @@ def quantize_int4_pallas(
         1-D of length num_channels, matching quantize_int4_ref(per_channel=True)
         and quantize_int4_triton.
     """
-    if not HAS_JAX:
-        raise RuntimeError("jax is not installed")
-
-    kv_j = jnp.asarray(np.ascontiguousarray(np.asarray(kv), dtype=np.float32))
-    if kv_j.ndim != 2:
-        raise ValueError(f"expected [num_rows, num_channels], got {kv_j.shape}")
-
-    n_rows, n_ch = kv_j.shape
-    if n_rows == 0 or n_ch == 0:
-        raise ValueError(
-            f"cannot quantize an empty array (shape {kv_j.shape}): per-channel "
-            f"min/max over zero rows is undefined"
-        )
-    if block_rows < 1:
-        raise ValueError(f"block_rows must be >= 1, got {block_rows}")
-
-    block_r = min(block_rows, n_rows)
-    n_grid = (n_rows + block_r - 1) // block_r
-
-    stat_shape = jax.ShapeDtypeStruct((1, n_ch), jnp.float32)
-
-    mn, mx, scale, zp = pl.pallas_call(
-        # functools.partial would work too; a closure keeps the constants
-        # visibly static, which is what Pallas requires of them.
-        lambda kv_ref, mn_ref, mx_ref, s_ref, z_ref: _minmax_kernel(
-            kv_ref, mn_ref, mx_ref, s_ref, z_ref, n_rows=n_rows, n_grid=n_grid
-        ),
-        grid=(n_grid,),
-        in_specs=[pl.BlockSpec((block_r, n_ch), lambda i: (i, 0))],
-        # Every grid step maps to block (0, 0): Pallas keeps it resident, so
-        # these behave as accumulators across the sequential grid.
-        out_specs=[
-            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
-            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
-            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
-            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
-        ],
-        out_shape=[stat_shape, stat_shape, stat_shape, stat_shape],
-        interpret=interpret,
-    )(kv_j)
-
-    q = pl.pallas_call(
-        _quantize_kernel,
-        grid=(n_grid,),
-        in_specs=[
-            pl.BlockSpec((block_r, n_ch), lambda i: (i, 0)),
-            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
-            pl.BlockSpec((1, n_ch), lambda i: (0, 0)),
-        ],
-        out_specs=pl.BlockSpec((block_r, n_ch), lambda i: (i, 0)),
-        out_shape=jax.ShapeDtypeStruct((n_rows, n_ch), jnp.uint8),
-        interpret=interpret,
-    )(kv_j, mn, scale)
-
-    return (
-        np.asarray(q),
-        np.asarray(scale).reshape(n_ch),
-        np.asarray(zp).reshape(n_ch),
-    )
+    return prepare_quantize_int4_pallas(kv, block_rows, interpret)()
 
 
 def dequantize_int4_pallas(q, scale, zp) -> np.ndarray:

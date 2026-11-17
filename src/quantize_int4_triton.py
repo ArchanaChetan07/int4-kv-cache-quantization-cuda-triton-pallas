@@ -17,6 +17,8 @@ which is how CI validates these numerics without a GPU.
 
 from typing import Tuple
 
+from ._prepared import PreparedCall
+
 try:
     import triton
     import triton.language as tl
@@ -69,16 +71,16 @@ if HAS_TRITON:
             tl.store(q_ptr + offs * n_ch + c, qi.to(tl.uint8), mask=mask)
 
 
-def quantize_int4_triton(kv) -> Tuple:
-    """Quantize a 2D [num_rows, num_channels] tensor to INT4 via Triton.
+def prepare_quantize_int4_triton(kv, block: int = 1024) -> PreparedCall:
+    """Stage `kv` and the outputs on the device once; see quantize_int4_triton.
 
-    Accepts a NumPy array or torch tensor; returns
-    (q uint8, scale f32, zp f32) as NumPy arrays.
-    Requires triton (GPU, or CPU with TRITON_INTERPRET=1).
+    The returned call's run() is a single kernel launch on device-resident
+    tensors -- what a benchmark should time.
     """
     if not HAS_TRITON:
         raise RuntimeError("triton is not installed")
 
+    import os
     import numpy as np
     import torch
 
@@ -87,22 +89,45 @@ def quantize_int4_triton(kv) -> Tuple:
     else:
         kv_t = kv.float().contiguous()
 
-    assert kv_t.dim() == 2, "expected [num_rows, num_channels]"
+    if kv_t.dim() != 2:
+        raise ValueError(f"expected [num_rows, num_channels], got {tuple(kv_t.shape)}")
     n_rows, n_ch = kv_t.shape
+    if n_rows == 0 or n_ch == 0:
+        raise ValueError(
+            f"cannot quantize an empty array (shape {tuple(kv_t.shape)}): "
+            "per-channel min/max over zero rows is undefined")
 
+    # Prefer real GPU execution when present; interpreter mode
+    # (TRITON_INTERPRET=1) runs on CPU tensors.
+    if (torch.cuda.is_available() and kv_t.device.type == "cpu"
+            and os.environ.get("TRITON_INTERPRET") != "1"):
+        kv_t = kv_t.cuda()
     device = kv_t.device
-    if torch.cuda.is_available() and device.type == "cpu":
-        # Prefer real GPU execution when present; interpreter mode
-        # (TRITON_INTERPRET=1) runs fine on CPU tensors.
-        import os
-        if os.environ.get("TRITON_INTERPRET") != "1":
-            kv_t = kv_t.cuda()
-            device = kv_t.device
 
     q = torch.empty((n_rows, n_ch), dtype=torch.uint8, device=device)
     scale = torch.empty(n_ch, dtype=torch.float32, device=device)
     zp = torch.empty(n_ch, dtype=torch.float32, device=device)
 
-    _quantize_int4_kernel[(n_ch,)](kv_t, q, scale, zp, n_rows, n_ch, BLOCK=1024)
+    def run():
+        _quantize_int4_kernel[(n_ch,)](kv_t, q, scale, zp, n_rows, n_ch, BLOCK=block)
+        return q, scale, zp
 
-    return q.cpu().numpy(), scale.cpu().numpy(), zp.cpu().numpy()
+    def sync(_out):
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+    return PreparedCall(
+        run=run,
+        sync=sync,
+        to_numpy=lambda out: tuple(t.cpu().numpy() for t in out),
+    )
+
+
+def quantize_int4_triton(kv) -> Tuple:
+    """Quantize a 2D [num_rows, num_channels] tensor to INT4 via Triton.
+
+    Accepts a NumPy array or torch tensor; returns
+    (q uint8, scale f32, zp f32) as NumPy arrays.
+    Requires triton (GPU, or CPU with TRITON_INTERPRET=1).
+    """
+    return prepare_quantize_int4_triton(kv)()
