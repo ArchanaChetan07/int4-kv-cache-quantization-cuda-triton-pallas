@@ -36,7 +36,7 @@ if os.environ.get("FLASH_DECODE_FORCE_CUDA"):
 setup(
     name="flash-decode-int4",
     version="0.1.0",
-    description="Flash Decoding with INT4 KV quantization",
+    description="INT4 KV-cache quantization + fused flash-decoding attention in CUDA, Triton and JAX/Pallas, validated against one NumPy oracle",
     author="Archana Suresh Patil",
     license="Apache-2.0",
     python_requires=">=3.10",

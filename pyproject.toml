@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flash-decode-int4"
 version = "0.1.0"
-description = "Flash Decoding with INT4 KV: Fused online softmax + per-channel asymmetric INT4 quantization"
+description = "INT4 KV-cache quantization + fused flash-decoding attention in CUDA, Triton and JAX/Pallas, validated against one NumPy oracle"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -19,6 +19,10 @@ dependencies = [
     "torch>=2.0.0",
     "numpy>=1.24.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas"
+Report = "https://github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas/blob/main/docs/INT4_KV_Pallas_Project_Report.pdf"
 
 [project.optional-dependencies]
 dev = [

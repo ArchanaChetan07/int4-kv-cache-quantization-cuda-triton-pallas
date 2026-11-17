@@ -117,27 +117,33 @@ def accuracy_chart():
 # ---------------------------------------------------------------------------
 
 def backend_matrix():
-    """Which kernel backend actually runs on which silicon.
+    """Which kernel backend runs these kernels on which silicon.
 
-    This is the constraint that reshaped the project: the local Turing GPU is
-    below the floor of both live Pallas GPU backends.
+    T1000 and H100 entries are measured (the H100 with JAX 0.12.0.1); Ampere
+    entries follow the documentation; TPU is expected but untested. On GPU,
+    compiled Pallas either is not reached (Mosaic GPU) or races (Triton
+    backend) -- results/pallas_compiled_on_gpu_h100.json.
     """
     backends = ["CUDA\n(hand-written)", "Triton", "Pallas\nMosaic TPU",
                 "Pallas\nMosaic GPU", "Pallas\nTriton backend"]
     hw = ["CPU\n(no accel)", "T1000\nTuring SM75", "Ampere\nGPU",
-          "Hopper\nGPU", "TPU\nv5e"]
+          "H100\nHopper", "TPU\nv5e"]
 
-    # 2 = runs, 1 = interpret/limited, 0 = unavailable, -1 = deprecated
+    #  2 runs                 3 expected, untested      1 interpret only
+    #  0 not applicable      -1 deprecated (documented)
+    # -2 compiles, races (measured)   -3 not reached in jax 0.12 (measured)
     M = np.array([
-        [0, 2, 2, 2, 0],   # CUDA
-        [0, 2, 2, 2, 0],   # Triton
-        [1, 0, 0, 0, 2],   # Pallas Mosaic TPU  (interpret on CPU)
-        [1, 0, 0, 2, 0],   # Pallas Mosaic GPU
-        [1, 0, -1, -1, 0],  # Pallas Triton backend (deprecated)
+        [0, 2, 2, 2, 0],    # CUDA
+        [0, 2, 2, 2, 0],    # Triton
+        [1, 0, 0, 0, 3],    # Pallas Mosaic TPU
+        [1, 0, 0, -3, 0],   # Pallas Mosaic GPU
+        [1, 0, -1, -2, 0],  # Pallas Triton backend
     ])
 
-    cmap = {2: GREEN, 1: AMBER, 0: "#E8E8EC", -1: RED}
-    txt = {2: "runs", 1: "interpret\nonly", 0: "—", -1: "deprecated"}
+    cmap = {2: GREEN, 3: "#9BC9C3", 1: AMBER, 0: "#E8E8EC",
+            -1: RED, -2: RED, -3: RED}
+    txt = {2: "runs", 3: "expected\n(untested)", 1: "interpret\nonly", 0: "—",
+           -1: "deprecated", -2: "compiles,\nraces", -3: "not reached\n(jax 0.12)"}
 
     fig, ax = plt.subplots(figsize=(9.4, 5.0), dpi=160)
     for i in range(len(backends)):
@@ -147,8 +153,8 @@ def backend_matrix():
                                        facecolor=cmap[v], edgecolor="white", lw=2))
             ax.text(j + 0.5, len(backends) - 1 - i + 0.5, txt[v],
                     ha="center", va="center", fontsize=8.2,
-                    color="white" if v in (2, -1) else INK,
-                    weight="bold" if v in (2, -1) else "normal")
+                    color="white" if v in (2, -1, -2, -3) else INK,
+                    weight="bold" if v in (2, -1, -2, -3) else "normal")
 
     ax.set_xlim(0, len(hw)); ax.set_ylim(0, len(backends))
     ax.set_xticks(np.arange(len(hw)) + 0.5)
@@ -159,8 +165,8 @@ def backend_matrix():
     for s in ax.spines.values():
         s.set_visible(False)
     ax.set_title(
-        "Backend x hardware availability\n"
-        "the local Turing GPU is below the floor of both live Pallas GPU backends",
+        "Which backend runs these kernels on which silicon\n"
+        "T1000 and H100 measured (jax 0.12.0.1); interpret mode is correct on any device",
         fontsize=11.5, color=INK, weight="bold", loc="left", pad=12)
 
     fig.tight_layout()
@@ -421,6 +427,45 @@ def perplexity_tradeoff_chart():
     print("wrote", out)
 
 
+
+# ---------------------------------------------------------------------------
+# 8. social preview card (upload: repo Settings -> General -> Social preview)
+# ---------------------------------------------------------------------------
+
+def social_card():
+    """1280x640 card shown when the repository link is shared. Every figure on
+    it is a committed measurement (results/*_h100*.json)."""
+    bg, fg, sub, accent = "#0E1116", "#F5F7FA", "#A8B2C4", "#4FD1D9"
+    fig = plt.figure(figsize=(12.8, 6.4), dpi=100)
+    fig.patch.set_facecolor(bg)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1280); ax.set_ylim(0, 640); ax.axis("off")
+
+    ax.text(72, 560, "LLM INFERENCE  ·  GPU KERNELS  ·  QUANTIZATION", color=accent,
+            fontsize=15, weight="bold")
+    ax.text(72, 470, "INT4 KV-Cache Quantization +", color=fg, fontsize=40, weight="bold")
+    ax.text(72, 408, "Fused Flash-Decoding Attention", color=fg, fontsize=40, weight="bold")
+    ax.text(72, 350, "One decode kernel, three backends:  CUDA  ·  Triton  ·  JAX/Pallas",
+            color=sub, fontsize=21)
+
+    stats = [("0.40 ms", "decode attention\non an NVIDIA H100"),
+             ("+0.29%", "Llama-2-7B perplexity\nat 3.56x key compression"),
+             ("154", "tests passing\non the H100")]
+    for i, (big, label) in enumerate(stats):
+        x = 72 + i * 395
+        ax.add_patch(plt.Rectangle((x, 112), 360, 178, facecolor="#151A22",
+                                   edgecolor="#2A323F", lw=1.5))
+        ax.text(x + 26, 216, big, color=accent, fontsize=38, weight="bold")
+        ax.text(x + 28, 140, label, color=sub, fontsize=14.5, linespacing=1.35)
+
+    ax.text(72, 52, "github.com/ArchanaChetan07/int4-kv-cache-quantization-cuda-triton-pallas",
+            color="#78839A", fontsize=13.5)
+    out = os.path.join(OUT, "social_preview.png")
+    fig.savefig(out, facecolor=bg, dpi=100)
+    plt.close(fig)
+    print("wrote", out)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     accuracy_chart()
@@ -430,3 +475,4 @@ if __name__ == "__main__":
     t1000_quantizer_chart()
     h100_chart()
     perplexity_tradeoff_chart()
+    social_card()

@@ -386,8 +386,9 @@ def build():
         "A scoping check before writing code invalidated the obvious version of this project, "
         "and it is worth stating plainly because it shapes everything after it.", DECK)]
     s += figure("pallas_backend_matrix.png", 6.6,
-                "Figure 1. Which kernel backend runs on which silicon. Measured and "
-                "documented, not estimated.")
+                "Figure 1. Which backend runs these kernels on which silicon. T1000 "
+                "and H100 entries are measured; Ampere follows the documentation; TPU "
+                "is expected but untested.")
     s += [p(
         "Pallas has two GPU backends. Mosaic GPU, the recommended one, targets Hopper and "
         "Blackwell. The Triton backend, which would otherwise have covered older cards, is "
@@ -397,6 +398,12 @@ def build():
         "Pallas also has no CPU code generator at all. Calling pallas_call with "
         "interpret=False on a CPU host raises 'Only interpret mode is supported on CPU "
         "backend'. There is no slow-but-real fallback.", BODY)]
+    s += [p(
+        "The H100 run sharpened this. In JAX 0.12.0.1, pallas_call does not reach Mosaic "
+        "GPU at all -- no lowering rule is registered -- and the Triton backend it does "
+        "reach runs grid programs in parallel. These kernels therefore compile on any GPU "
+        "and return wrong answers (section 6.3). Compiled Pallas is TPU-only as written.",
+        BODY)]
     s += callout(
         "Consequence",
         "Porting Triton to Pallas <i>on GPU</i> would have compiled the Pallas code back "
@@ -438,16 +445,18 @@ def build():
         "assumption, not a measurement.")
 
     s += sect(
-        "6.3  A correctness bug that only exists on GPU",
+        "6.3  A correctness bug that only exists on GPU, and a fix that was not enough",
         "The Pallas accumulators live in output blocks whose index map ignores the sequence "
         "axis, so Pallas keeps them resident and consecutive writes accumulate. This is safe "
         "only because the TPU grid executes sequentially in lexicographic order.",
-        "On GPU that guarantee does not hold: Mosaic GPU partitions dimensions marked "
-        "'parallel' across CUDA thread blocks, which would make the accumulator a race. "
-        "Interpret mode cannot reveal this, because it executes the grid sequentially by "
-        "construction. The fix declares the semantics explicitly -- (parallel, parallel, "
-        "sequential) on GPU, (parallel, parallel, arbitrary) on TPU -- and was applied before "
-        "any GPU time was purchased.")
+        "On GPU that guarantee does not hold, and interpret mode cannot reveal it, because "
+        "it runs the grid sequentially by construction. The first fix declared the "
+        "semantics explicitly -- (parallel, parallel, sequential) for Mosaic GPU -- before "
+        "any GPU time was bought. The H100 showed it was not enough: pallas_call never "
+        "reaches Mosaic GPU in JAX 0.12.0.1, and the Triton backend it does reach has no "
+        "sequential mode. Compiled anyway, the quantizer put 28.9% of bins wrong and "
+        "attention was off by up to 5.4, with no NaN and no error. Compiled Pallas is now "
+        "refused on GPU, and GPU hosts run it in interpret mode, which is correct.")
 
     s += sect(
         "6.4  The same defect class, a different shape of fix",
