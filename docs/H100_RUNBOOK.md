@@ -32,7 +32,10 @@ complementary, not an alternative.
 
 1. **Request Llama-2 access.** `meta-llama/Llama-2-7b-hf` is gated; approval can
    take hours. Accept the licence at
-   <https://huggingface.co/meta-llama/Llama-2-7b-hf>, then `huggingface-cli login`.
+   <https://huggingface.co/meta-llama/Llama-2-7b-hf>, then `hf auth login` (older huggingface_hub: `huggingface-cli login`).
+   Use a classic **Read** token, or a fine-grained token with *"Read access to
+   contents of all public gated repos you can access"* enabled — a fine-grained
+   token without it gets 403 even after Meta approves the licence.
    Ungated fallbacks needing no approval: `Qwen/Qwen2.5-7B`,
    `TinyLlama/TinyLlama-1.1B-Chat-v1.0`.
 

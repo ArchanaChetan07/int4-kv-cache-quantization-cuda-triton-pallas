@@ -195,12 +195,20 @@ def _hf():
         return OK, detail
     except Exception as exc:
         chain = _error_chain(exc)
+        if "fine-grained token" in chain:
+            return WARN, (
+                f"{model}: 403 from TOKEN SCOPE, not from the model's gate. This is\n"
+                f"          a fine-grained token without 'Read access to contents of all\n"
+                f"          public gated repos you can access' -- it fails even after the\n"
+                f"          licence is approved. Enable that permission at\n"
+                f"          https://huggingface.co/settings/tokens, or log in with a classic\n"
+                f"          Read token (`hf auth login`), then re-run preflight.")
         if any(t in chain for t in ("403", "401", "Gated", "gated", "restricted")):
             return WARN, (
                 f"{model}: NO download permission (403). Access is pending or was\n"
                 f"          never requested. Request it at https://huggingface.co/{model}\n"
                 f"          (one approval covers the whole Llama 2 collection), then\n"
-                f"          `huggingface-cli login`. Do this BEFORE renting. Ungated\n"
+                f"          `hf auth login`. Do this BEFORE renting. Ungated\n"
                 f"          fallback needing no approval: --model Qwen/Qwen2.5-7B")
         return WARN, f"{type(exc).__name__}: {chain[:160]}"
 
