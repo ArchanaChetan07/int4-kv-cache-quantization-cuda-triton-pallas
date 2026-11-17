@@ -37,6 +37,7 @@ from typing import Tuple
 
 import numpy as np
 
+from ._pallas_platform import compiled_platform
 from ._prepared import PreparedCall
 
 try:
@@ -150,6 +151,9 @@ def prepare_quantize_int4_pallas(
         )
     if block_rows < 1:
         raise ValueError(f"block_rows must be >= 1, got {block_rows}")
+
+    # Pass 1 accumulates min/max across the row grid: sequential only on TPU.
+    compiled_platform(interpret)
 
     block_r = min(block_rows, n_rows)
     n_grid = (n_rows + block_r - 1) // block_r

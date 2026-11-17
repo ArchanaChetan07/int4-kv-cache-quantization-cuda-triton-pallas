@@ -52,16 +52,27 @@ def _has_accelerator() -> bool:
         return False
 
 
+def _has_tpu() -> bool:
+    if not HAS_JAX:
+        return False
+    try:
+        return any(d.platform == "tpu" for d in jax.devices())
+    except Exception:
+        return False
+
+
 def _pallas_interpret(force: Optional[bool] = None) -> bool:
     """Whether the Pallas backend should run in interpret mode.
 
-    Interpret mode executes the kernel as ordinary JAX instead of lowering to
-    Mosaic, so it works on any machine. It is a correctness vehicle, not a fast
-    path -- so it is the default only when no accelerator is present.
+    Compiled only on TPU. The kernels accumulate across a sequential grid
+    axis, which JAX's Pallas GPU backend runs in parallel -- measured racing
+    on an H100 (see _pallas_platform). On GPU and CPU hosts the default is
+    interpret mode: the kernel body runs as JAX ops (on the GPU where there is
+    one) and is correct, but its timings are not kernel performance numbers.
     """
     if force is not None:
         return force
-    return not _has_accelerator()
+    return not _has_tpu()
 
 
 def _use_cuda(force: Optional[bool] = None) -> bool:

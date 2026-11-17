@@ -28,6 +28,12 @@ Design rules, fixed before any backend was timed:
     omitted -- an absent row and a failed row must not look the same.
 6.  The shape sweep below was fixed in advance and is not edited after seeing
     results.
+7.  Nothing is timed until its output agrees with the NumPy reference on that
+    exact configuration (quantizer: the parity-test contract; attention: max
+    abs diff < ATTENTION_TOLERANCE). Finite is not the same as correct: on an
+    H100, the Pallas quantizer compiled on the Triton backend, raced, and
+    produced plausible-looking wrong bins in 0.049 ms -- a number this rule
+    now refuses to publish.
 
 Anti-cheat assertions run inside the harness; see _anticheat().
 
@@ -240,6 +246,30 @@ def _check_finite(result) -> None:
             raise RuntimeError("backend produced a non-finite result")
 
 
+#: Every backend's attention output must agree with the NumPy reference to
+#: this absolute tolerance before it is timed. Parity tests use 1e-4.
+ATTENTION_TOLERANCE = 1e-3
+
+
+def quantize_disagreement(result, oracle) -> Optional[str]:
+    """None if a quantizer's (q, scale, zp) honours the parity contract.
+
+    Same contract as the tests: scales rtol 1e-4, bins at most one apart on
+    under 1% of elements (half-up vs banker's rounding at exact .5 ties).
+    Otherwise a description of how it is wrong.
+    """
+    q, scale, _zp = (np.asarray(x) for x in result)
+    q_r, scale_r, _ = oracle
+    if q.shape != q_r.shape:
+        return f"shape {q.shape} != {q_r.shape}"
+    if not np.allclose(scale, scale_r, rtol=1e-4):
+        return f"scales differ (max rel {np.max(np.abs(scale - scale_r) / np.abs(scale_r)):.3g})"
+    diff = np.abs(q.astype(int) - q_r.astype(int))
+    if diff.max() > 1 or (diff > 0).mean() >= 0.01:
+        return f"bins differ: max {diff.max()}, {(diff > 0).mean():.2%} of elements"
+    return None
+
+
 def time_op(call: PreparedCall, iters: int, warmup: int = 3) -> float:
     """Milliseconds per launch on device-resident inputs.
 
@@ -418,6 +448,8 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
                                   "and L2 serves repeats",
             "peak_bandwidth": "vendor spec sheet",
             "sweep_fixed_before_timing": True,
+            "correctness_gate": "no row is timed unless its output matches the "
+                                "NumPy reference on that configuration",
         },
         "backends": {},
         "rows": [],
@@ -466,17 +498,23 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
             rows_, ch = kv.shape
             print(f"{rows_} x {ch}")
             baselines: Dict[tuple, float] = {}
+            oracle = quantize_int4_ref(kv, per_channel=True)
             for name in live_q:
                 try:
-                    ms = time_op(stage_quantize(name, kv), iters=iters)
+                    call = stage_quantize(name, kv)
+                    wrong = quantize_disagreement(call(), oracle)
+                    if wrong:
+                        raise RuntimeError(f"incorrect output, not timed: {wrong}")
+                    ms = time_op(call, iters=iters)
                 except Exception as exc:
-                    print(f"    {name:10s} ERROR {exc!r}")
+                    print(f"    {name:10s} ERROR {exc!r}"[:240])
                     results["rows"].append({"op": "quantize", "rows": rows_,
                                             "channels": ch, "backend": name,
                                             "error": repr(exc)})
                     continue
                 row = _row("quantize", {"rows": rows_, "channels": ch}, name, ms,
                            {"unique": quant_bytes(rows_, ch)})
+                row["verified_against_reference"] = True
                 results["rows"].append(row)
                 _print_row(row, baselines)
             print()
@@ -491,15 +529,23 @@ def run(backends: List[str], sweep: List[Dict], iters: int,
                   f"   (unique {nbytes['unique']/1e6:.1f} MB,"
                   f" streamed {nbytes['streamed']/1e6:.1f} MB)")
             baselines = {}
+            oracle = _reference(p)
             for name in live_a:
                 try:
-                    ms = time_op(stage_attention(name, p), iters=iters)
+                    call = stage_attention(name, p)
+                    out = np.asarray(call())
+                    diff = float(np.abs(out - oracle).max()) if out.shape == oracle.shape else np.inf
+                    if not np.isfinite(out).all() or not diff < ATTENTION_TOLERANCE:
+                        raise RuntimeError(f"incorrect output, not timed: max abs diff "
+                                           f"{diff:.3g} vs reference")
+                    ms = time_op(call, iters=iters)
                 except Exception as exc:
-                    print(f"    {name:10s} ERROR {exc!r}")
+                    print(f"    {name:10s} ERROR {exc!r}"[:240])
                     results["rows"].append({"op": "attention", **cfg,
                                             "backend": name, "error": repr(exc)})
                     continue
                 row = _row("attention", dict(cfg), name, ms, nbytes)
+                row["max_abs_diff_vs_reference"] = diff
                 results["rows"].append(row)
                 _print_row(row, baselines)
             if len({execution_mode(n) for n in live_a}) > 1:

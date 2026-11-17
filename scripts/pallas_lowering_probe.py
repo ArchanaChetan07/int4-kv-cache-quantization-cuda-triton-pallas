@@ -15,6 +15,8 @@ Each probe reports one of:
     MISMATCH  compiled, but disagreed with interpret mode -- the interesting
               failure, and the one grid-semantics bugs produce
     REJECTED  the compiler refused it; the error text IS the finding
+    UNSUPPORTED  refused by design: compiling these kernels for this
+              platform is known to race (src/_pallas_platform.py)
     SKIPPED   no accelerator, or a dependency is missing
 
     python scripts/pallas_lowering_probe.py
@@ -56,6 +58,8 @@ def probe_quantizer():
     q_i, s_i, z_i = quantize_int4_pallas(kv, interpret=True)
     try:
         q_c, s_c, z_c = quantize_int4_pallas(kv, interpret=False)
+    except NotImplementedError as exc:
+        return {"status": "UNSUPPORTED", "reason": str(exc)}
     except Exception as exc:
         return {"status": "REJECTED", "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc()[-2000:]}
@@ -106,6 +110,8 @@ def probe_attention():
     out_i = flash_decode_pallas(query, k_q, k_s, k_z, v_l, lens, interpret=True)
     try:
         out_c = flash_decode_pallas(query, k_q, k_s, k_z, v_l, lens, interpret=False)
+    except NotImplementedError as exc:
+        return {"status": "UNSUPPORTED", "reason": str(exc)}
     except Exception as exc:
         return {"status": "REJECTED", "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc()[-2000:]}

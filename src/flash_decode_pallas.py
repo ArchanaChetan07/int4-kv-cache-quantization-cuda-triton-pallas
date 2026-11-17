@@ -38,6 +38,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from ._pallas_platform import compiled_platform
 from ._prepared import PreparedCall
 from ._validate import normalize_attention_inputs
 
@@ -238,7 +239,7 @@ def prepare_flash_decode_pallas(
     # Grid-order semantics must be declared explicitly for any compiled
     # backend; see _compiler_params. Omitted in interpret mode, which executes
     # the grid sequentially by construction.
-    platform = "" if interpret else jax.devices()[0].platform
+    platform = compiled_platform(interpret)     # raises on GPU: see _pallas_platform
     cparams = None if interpret else _compiler_params(platform)
     extra = {"compiler_params": cparams} if cparams is not None else {}
 
